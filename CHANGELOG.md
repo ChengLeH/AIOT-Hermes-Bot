@@ -4,6 +4,8 @@
 
 ### English
 
+- Fix clean installation in CI by restoring the missing locked optional dependency.
+
 - Encrypt browser connection credentials with AES-256-GCM and a non-extractable Web Crypto key in IndexedDB; migrate legacy plaintext storage and use memory-only fallback when encrypted persistence is unavailable. This does not claim protection against same-origin XSS.
 
 - Improve mobile chat wrapping, navigation, syntax-colored code and per-message copy controls. Open each Bot at its latest message and jump to latest after sending; incoming replies preserve your position when you scroll up to read.
@@ -17,6 +19,8 @@
 Validation: local macOS and Android checks; Windows and iPhone installation remain unverified. Approval background notification delivery and mobile command suggestions still need further end-to-end checks.
 
 ### 繁體中文
+
+- 補齊遺漏的選用依賴鎖定資料，修正 CI 乾淨安裝失敗。
 
 - 手機連線憑證改用 AES-256-GCM 與不可直接匯出的 Web Crypto 金鑰保存在 IndexedDB；遷移舊明文，無法加密保存時僅使用記憶體並提示。此機制不宣稱能防禦同站 XSS。
 
