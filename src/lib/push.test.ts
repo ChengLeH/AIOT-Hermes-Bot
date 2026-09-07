@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { vapidToBytes } from "./vapid.ts";
+import { pushSubscribePayload, sanitizeVisiblePush } from "./push-payload.ts";
+import { approvalDeepLink, genericApprovalNotice } from "./approvals.ts";
+
+test("vapid public key decodes from url-safe base64", () => {
+  const bytes = vapidToBytes("AQID");
+  assert.deepEqual([...bytes], [1, 2, 3]);
+});
+
+test("bot messages payload is only profile, conversation, text", () => {
+  const body = JSON.parse(
+    JSON.stringify({ profile: "alpha", conversation: "c1", text: "hi" }),
+  ) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), ["conversation", "profile", "text"]);
+  assert.equal("model" in body, false);
+  assert.equal("owner" in body, false);
+  assert.equal("user_id" in body, false);
+  assert.equal("chat_id" in body, false);
+});
+
+test("subscribe payload is preview false and has no chat text", () => {
+  const body = pushSubscribePayload({ endpoint: "https://push.example/sub" });
+  assert.equal(body.preview, false);
+  assert.deepEqual(Object.keys(body).sort(), ["preview", "subscription"]);
+  assert.equal("text" in body, false);
+  assert.equal("title" in body, false);
+  assert.equal("body" in body, false);
+});
+
+test("approval push is generic, has no command, and deep-links profile plus conversation", () => {
+  const visible = sanitizeVisiblePush({
+    title: "Run this",
+    body: "rm -rf /tmp",
+    kind: "approval_request",
+    command: "rm -rf /tmp",
+    request_id: "req-1",
+    profile: "alpha",
+    conversation: "c1",
+  });
+  assert.equal(visible.title, "aiot");
+  assert.equal(visible.body, "");
+  assert.equal(visible.body.includes("rm"), false);
+  assert.equal(visible.profile, "alpha");
+  assert.equal(visible.sessionId, "c1");
+  assert.equal(genericApprovalNotice().title, "aiot");
+  assert.equal(approvalDeepLink("https://machine.example.ts.net", visible.profile, visible.sessionId), "/?profile=alpha&session=c1");
+
+  const normal = sanitizeVisiblePush({ title: "Done", body: "turn finished", profile: "alpha", sessionId: "c1" });
+  assert.equal(normal.title, "Done");
+  assert.equal(normal.body, "turn finished");
+});
+
+test("service worker defaults to aiot and sanitizes approval payloads", () => {
+  const sw = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
+  assert.match(sw, /title: "aiot"/);
+  assert.equal(sw.includes('title: "Hermes"'), false);
+  assert.match(sw, /sanitizeVisiblePush/);
+  assert.match(sw, /approval/);
+  assert.match(sw, /request_id/);
+  assert.match(sw, /searchParams.set\("profile"/);
+  assert.match(sw, /searchParams.set\("session"/);
+});

@@ -1,0 +1,13 @@
+node_modules/
+.aiot/
+.runtime/
+.vercel/
+.grok/
+.env
+.env.*
+!.env.example
+artifacts/
+attachments/
+screenshots/
+*.log
+.DS_Store

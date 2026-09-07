@@ -1,0 +1,6 @@
+#!/bin/zsh
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+NODE_BIN="$(/bin/zsh -lc 'command -v node' 2>/dev/null)"
+[[ -n "$NODE_BIN" ]] || exit 0
+"$NODE_BIN" "$ROOT/scripts/aiot-service.mjs" stop
+/usr/bin/osascript -e 'display notification "AIOT 已停止" with title "AIOT / Hermes Bot"'

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>aiot</title>
+    <style>
+      :root { font-family: system-ui, -apple-system, sans-serif; color: #f3f3f4; background: #070708; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; }
+      main { width: min(30rem, calc(100% - 2rem)); text-align: center; }
+      h1 { font-size: 3rem; letter-spacing: .24em; text-indent: .24em; margin: 0; }
+      p { color: #999aa1; line-height: 1.7; }
+      a { display: inline-flex; min-height: 3rem; align-items: center; justify-content: center; margin-top: 1rem; padding: 0 1.25rem; border-radius: 999px; color: #070708; background: #f3f3f4; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>aiot</h1>
+      <p id="status">正在開啟本機設定頁…</p>
+      <a id="open" href="http://127.0.0.1:8888/">開啟設定頁</a>
+      <p>若頁面無法開啟，請先雙擊同一資料夾裡的「AIOT.app」。</p>
+    </main>
+    <script>
+      const target = "http://127.0.0.1:8888/";
+      fetch(target, { mode: "no-cors", cache: "no-store" })
+        .then(() => location.replace(target))
+        .catch(() => { document.querySelector("#status").textContent = "aiot 服務尚未啟動。"; });
+    </script>
+  </body>
+</html>
