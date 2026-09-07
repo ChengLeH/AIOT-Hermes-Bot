@@ -140,7 +140,7 @@ export function applyApprovalEvent(
 
 export function mergeApproval(list: ApprovalCard[], next: ApprovalCard): ApprovalCard[] {
   const safe = sanitizeApproval(next);
-  if (safe.status === "approved" && !safe.resolvedAt) safe.resolvedAt = Date.now();
+  if ((safe.status === "approved" || safe.status === "rejected") && !safe.resolvedAt) safe.resolvedAt = Date.now();
   const idx = list.findIndex((item) => item.requestId === safe.requestId);
   if (idx < 0) return [...list, safe].slice(-100);
   const current = list[idx]!;

@@ -20,7 +20,7 @@
   --color-danger: #c4544a;
   --color-ok: #6f9e86;
   --color-stop: #eadcda;
-  --color-stop-bg: color-mix(in oklab, #8a6e6e 58%, #161618);
+  --color-stop-bg: #8f555f;
   --color-offline: color-mix(in oklab, #8a6e6e 58%, #eadcda);
 
   --radius-xs: 4px;
@@ -646,7 +646,7 @@
 }
 
 .stop-btn:hover:not(:disabled) {
-  background: color-mix(in oklab, #8a6e6e 70%, #161618);
+  background: #a4606b;
 }
 
 .status-offline {

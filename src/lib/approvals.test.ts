@@ -140,3 +140,11 @@ test("stripApprovalSecrets removes bearer and home paths", () => {
   assert.equal(cleaned.includes("abc.def"), false);
   assert.equal(cleaned.includes("/home/me"), false);
 });
+
+ test("rejected cards get a stable dismissal timestamp across replay", () => {
+  const card = { requestId: "reject-timer", profile: "example", conversation: "conversation", command: "example", description: "", choices: ["once", "deny"], status: "rejected", createdAt: 1 } as Parameters<typeof mergeApproval>[1];
+  const first = mergeApproval([], card);
+  assert.ok(first[0].resolvedAt);
+  const replay = mergeApproval(first, { ...card, resolvedAt: first[0].resolvedAt! + 10000 });
+  assert.equal(replay[0].resolvedAt, first[0].resolvedAt);
+});

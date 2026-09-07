@@ -42,7 +42,7 @@ export function ApprovalCardView({
   const [dismissed, setDismissed] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (card.status !== "approved") return;
+    if (card.status !== "approved" && card.status !== "rejected") return;
     // Persist the first confirmed resolution so replay/reload does not restart the timer.
     if (!card.resolvedAt) {
       upsertApproval({ ...card, resolvedAt: Date.now() });

@@ -4,6 +4,8 @@
 
 ### English
 
+- Dismiss both approved and rejected cards after 30 seconds with the same fade-and-collapse animation. Make stop controls a clearer muted red and tighten preview unread badges.
+
 - Make message copy icons smaller than the text and place them inside the bottom-right corner, with reserved space to prevent overlap.
 
 - Show a muted blue-gray glowing **New message** badge beside Bots with unread replies; opening their conversation clears it. Preserve unread state across reloads and detect changed replies while catching up on saved history.
@@ -12,6 +14,8 @@
 - Known limitation: enabled profile-local H3 / Host Bridge skills may be absent from the Hermes Bot completion API. This release does not claim to fix that upstream catalog issue or change Hermes settings.
 
 ### 繁體中文
+
+- 已批准與已拒絕卡皆在 30 秒後淡出收合；停止鍵改為更明確的灰紅色，預覽圖未讀標籤縮小貼合文字。
 
 - 複製圖示縮小至比內文字體小，放在氣泡內右下角並預留空間，不再額外占用下方一行。
 
