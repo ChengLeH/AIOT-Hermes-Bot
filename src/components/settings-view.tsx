@@ -195,12 +195,17 @@ function PushPanel({
   locale: ReturnType<typeof resolveLocale>;
 }) {
   const [status, setStatus] = useState<PushStatus | null>(null);
+  const [checking, setChecking] = useState(false);
   const [id, setId] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const ready = Boolean(origin && apiKey);
 
   useEffect(() => {
+    setStatus(null);
+    setId("");
+    setNote(null);
+    setChecking(ready);
     if (!ready) return;
     let cancelled = false;
     void (async () => {
@@ -222,7 +227,9 @@ function PushPanel({
         }
         if (!cancelled) setId(found);
       } catch (err) {
-        if (!cancelled) setNote(err instanceof Error ? err.message : t(locale, "push.readFail"));
+        if (!cancelled) setNote(t(locale, "push.serviceError"));
+      } finally {
+        if (!cancelled) setChecking(false);
       }
     })();
     return () => {
@@ -243,7 +250,7 @@ function PushPanel({
       );
       setNote(result.sourceReady ? t(locale, "push.enabledReady") : t(locale, "push.enabledNotReady"));
     } catch (err) {
-      setNote(err instanceof Error ? err.message : t(locale, "push.enableFail"));
+      setNote(t(locale, "push.enableFail") + (err instanceof Error && /status [45]/.test(err.message) ? ` — ${t(locale, "push.serviceError")}` : err instanceof Error ? ` — ${err.message}` : ""));
     } finally {
       setBusy(false);
     }
@@ -288,7 +295,7 @@ function PushPanel({
         </p>
       ) : (
         <p className="mt-3 text-xs text-subtle">
-          {ready ? t(locale, "push.checking") : t(locale, "push.connectFirst")}
+          {!ready ? t(locale, "push.connectFirst") : checking ? t(locale, "push.checking") : t(locale, "push.readFail")}
         </p>
       )}
       {status && !status.sourceReady ? (

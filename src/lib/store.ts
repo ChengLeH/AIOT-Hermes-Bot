@@ -1,12 +1,12 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { botFromProfile, botDisplayName, type Bot } from "./bots";
-import { eyeSwatchForProfile } from "./brand";
+import { eyeSwatchesForProfiles } from "./brand";
 import type { NativeBotCapabilities, NativeBotProfile } from "./bot-catalog";
 import type { ActivityLine, ChatMessage, Connection, HermesProbe } from "./types";
 import type { AttachmentDescriptor } from "./attachment-rules";
 import { uid } from "./utils";
-import { boundPasswordOrigin, writePassword, clearPassword } from "./secrets";
+import { boundPasswordOrigin, writePassword, clearPassword, credentialStorageUnavailable } from "./secrets";
 import { MISSING_BOT_NOTICE, type RestoreResult } from "./session";
 import { applyMissingCredential, MISSING_KEY_NOTICE, persistConnectionSlice } from "./credential-gate";
 import type { Locale } from "./locale";
@@ -62,6 +62,7 @@ type DeskState = {
     role: "user" | "assistant";
     text: string;
     keepRole?: boolean;
+    streaming?: boolean;
     attachments?: AttachmentDescriptor[];
   }) => void;
   adoptPendingUser: (botId: string, text: string, messageId: string) => void;
@@ -121,7 +122,8 @@ export const useDesk = create<DeskState>()(
           bots: s.bots.map((b) => (b.id === id ? { ...b, pinned: !b.pinned } : b)),
         })),
       setBotState: (botId, state) =>
-        set((s) => ({ botState: { ...s.botState, [botId]: state } })),
+        set((s) => ({ botState: { ...s.botState, [botId]: state },
+          messages: state === "idle" ? s.messages.map((m) => m.botId === botId && m.streaming ? { ...m, streaming: false } : m) : s.messages })),
       pushActivity: (botId, line) => {
         const item: ActivityLine = {
           id: line.id ?? uid("act"),
@@ -146,7 +148,9 @@ export const useDesk = create<DeskState>()(
         const prevOrigin = get().connection.origin;
         const origin = patch.origin ?? prevOrigin;
         if (typeof patch.apiKey === "string") {
-          writePassword(origin, patch.apiKey);
+          void writePassword(origin, patch.apiKey).then(() => {
+            if (credentialStorageUnavailable()) get().pushNotice(get().locale === "en" ? "Secure key storage is unavailable. This connection is kept only until you close this page." : "無法使用安全金鑰儲存；本次連線只會保留到關閉此頁面。");
+          });
           const prevBound = boundPasswordOrigin(prevOrigin);
           const nextBound = boundPasswordOrigin(origin);
           if (prevBound && nextBound && prevBound !== nextBound) clearPassword(prevOrigin);
@@ -171,6 +175,7 @@ export const useDesk = create<DeskState>()(
       syncHermesProfiles: (profiles, _capabilities) =>
         set((s) => {
           const incoming = profiles.filter((p) => p.name);
+          const colors = eyeSwatchesForProfiles(incoming.map((p) => p.name));
           const next: Bot[] = incoming.map((p) => {
             const prev = s.bots.find((b) => b.profile === p.name);
             const conversation = p.canonicalSessionId;
@@ -180,11 +185,11 @@ export const useDesk = create<DeskState>()(
                 name: botDisplayName(p.name, p.displayName),
                 available: p.available,
                 title: p.displayName || (p.available ? prev.title : ""),
-                swatch: eyeSwatchForProfile(p.name),
+                swatch: colors.get(p.name)!,
                 conversation,
               };
             }
-            return botFromProfile(p.name, p.available, conversation, p.displayName);
+            return { ...botFromProfile(p.name, p.available, conversation, p.displayName), swatch: colors.get(p.name)! };
           });
           const ids = new Set(next.map((b) => b.id));
           const activeOk = Boolean(s.activeBotId && ids.has(s.activeBotId));
@@ -220,7 +225,7 @@ export const useDesk = create<DeskState>()(
         set((s) => ({
           bots: s.bots.map((b) => (b.id === botId ? { ...b, conversation } : b)),
         })),
-      upsertEventMessage: ({ profile, conversation, messageId, role, text, keepRole, attachments }) => {
+      upsertEventMessage: ({ profile, conversation, messageId, role, text, keepRole, streaming, attachments }) => {
         const bot = get().bots.find((b) => b.profile === profile);
         if (!bot) return;
         void conversation;
@@ -233,6 +238,7 @@ export const useDesk = create<DeskState>()(
                   ? {
                       ...m,
                       content: text,
+                      streaming,
                       pending: false,
                       role: keepRole ? m.role : role,
                       attachments: mergeAttachmentMeta(m.attachments, attachments),
@@ -261,6 +267,7 @@ export const useDesk = create<DeskState>()(
                 botId: bot.id,
                 role,
                 content: text,
+                streaming,
                 createdAt: Date.now(),
                 messageId,
                 attachments: mergeAttachmentMeta(undefined, attachments),

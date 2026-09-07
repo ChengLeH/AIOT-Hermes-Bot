@@ -37,7 +37,7 @@ export function sanitizeVisiblePush(raw: unknown): VisiblePush {
   if (isApprovalPush(data)) {
     return {
       title: "aiot",
-      body: "",
+      body: "Approval requested",
       tag: typeof data.tag === "string" && data.tag ? data.tag : profile ? `approval:${profile}:${sessionId}` : "approval",
       profile,
       sessionId,

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronUp, Paperclip, Pin, Search, SendHorizontal, Square, X } from "lucide-react";
-import { BotAvatar } from "./bot-avatar";
+import { BotAvatar, WorkTicker } from "./bot-avatar";
 import { MessageAttachments, QueuePreview } from "./attachment-media";
 import { CompletionMenu } from "./completion-menu";
 import { ApprovalCardView } from "./approval-card";
+import { ApprovalDock, type ApprovalDockHandle } from "./approval-dock";
+import { BubbleCopy } from "./bubble-copy";
 import {
   canUploadAttachments,
   fileKindError,
@@ -34,6 +36,7 @@ import { completionMenuAction, isComposingKey, isTurnBusy, shouldSendOnEnter } f
 import { canInterrupt, interruptAccepted } from "@/lib/interrupt";
 import { postBotCompletions, postBotInterrupt } from "@/lib/native-bot";
 import { sendTask } from "@/lib/send-task";
+import { sentenceBubbles } from "@/lib/sentence-bubbles";
 import { Markdown } from "@/lib/markdown";
 import { useDesk } from "@/lib/store";
 import { botPresenceOnline, connectionLive, isUnauthorizedError, isUnauthorizedStatus, OFFLINE_STATUS_CLASS, resolveCredentialGate } from "@/lib/credential-gate";
@@ -41,6 +44,7 @@ import { localizeNotice, resolveLocale, t } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import { findMessageMatches, nextMatchIndex, searchCountLabel } from "@/lib/chat-search";
 import { jumpLatestBottomPx, transcriptAwayFromBottom } from "@/lib/jump-latest";
+import { backToRoster, closeSearchHistory, historySearchOpen, pushSearchHistory } from "@/lib/app-history";
 
 export function ChatView() {
   const activeBotId = useDesk((s) => s.activeBotId);
@@ -55,7 +59,12 @@ export function ChatView() {
   const connection = useDesk((s) => s.connection);
   const locale = resolveLocale(useDesk((s) => s.locale));
   const approvals = useDesk((s) => s.approvals);
+  const activity = useDesk((s) => s.activity);
+  const approvalDockRef = useRef<ApprovalDockHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const lastScrollTop = useRef(0);
+  const searchingRef = useRef(false);
   const composerRef = useRef<HTMLDivElement>(null);
   const composing = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -63,6 +72,7 @@ export function ChatView() {
   const chipsRef = useRef<QueuedAttachment[]>([]);
   const cacheRef = useRef(createCompletionCache());
   const abortRef = useRef<AbortController | null>(null);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const tokenRef = useRef<CompletionToken | null>(null);
   const [chips, setChips] = useState<QueuedAttachment[]>([]);
   const [cursor, setCursor] = useState(0);
@@ -70,6 +80,7 @@ export function ChatView() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [finding, setFinding] = useState(false);
+  searchingRef.current = finding;
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
   const [away, setAway] = useState(false);
@@ -120,25 +131,54 @@ export function ChatView() {
     };
   }, []);
 
-  useEffect(() => {
+  // Preserve the user's pre-update position; measuring after an append mistakes
+  // new content height for the user having scrolled away from the bottom.
+  useLayoutEffect(() => {
+    followLatest.current = true;
     const el = scroller.current;
     if (!el) return;
-    if (transcriptAwayFromBottom(el)) {
-      setAway(true);
-      return;
-    }
     el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
     setAway(false);
-  }, [thread.length, thread.at(-1)?.content, working, chips.length, threadApprovals.length]);
+  }, [bot?.id]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || !followLatest.current || finding) return;
+    el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
+    setAway(false);
+  }, [bot?.id, thread.length, thread.at(-1)?.content, working, chips.length, threadApprovals.length, finding]);
+
+  useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    const onScroll = () => setAway(transcriptAwayFromBottom(el));
+    const onScroll = () => {
+      const isAway = transcriptAwayFromBottom(el);
+      if (searchingRef.current || el.scrollTop < lastScrollTop.current - 1) {
+        followLatest.current = !isAway && !searchingRef.current;
+      } else if (!isAway) followLatest.current = !searchingRef.current;
+      lastScrollTop.current = el.scrollTop;
+      setAway(isAway);
+    };
+    // Images, fonts, approval cards and the mobile keyboard can resize after
+    // React's render. Follow only while the user was already reading latest.
+    const resized = () => {
+      if (followLatest.current && !searchingRef.current) {
+        el.scrollTop = el.scrollHeight;
+        lastScrollTop.current = el.scrollTop;
+        setAway(false);
+      } else setAway(transcriptAwayFromBottom(el));
+    };
+    const observer = new ResizeObserver(resized);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
     el.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [bot?.id]);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [bot?.id, thread.length === 0 && threadApprovals.length === 0]);
 
   useEffect(() => {
     const el = composerRef.current;
@@ -179,6 +219,18 @@ export function ChatView() {
   useEffect(() => {
     if (!working) setStopping(false);
   }, [working]);
+
+  useEffect(() => {
+    const onPopState = (event: PopStateEvent) => {
+      if (finding && !historySearchOpen(event.state)) {
+        setFinding(false);
+        setFindQuery("");
+        setFindIndex(0);
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [finding]);
 
   useEffect(() => {
     if (!completionsOn || !bot) {
@@ -272,7 +324,21 @@ export function ChatView() {
   function jumpLatest() {
     const el = scroller.current;
     if (!el) return;
+    followLatest.current = true;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }
+
+  function closeFinding() {
+    setFinding(false);
+    setFindQuery("");
+    setFindIndex(0);
+    closeSearchHistory();
+  }
+
+  function leaveChat() {
+    if (finding) { closeFinding(); return; }
+    if (approvalDockRef.current?.collapse()) return;
+    backToRoster(() => setView("roster"));
   }
 
   async function interruptTurn() {
@@ -313,6 +379,20 @@ export function ChatView() {
     const ids = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!.id);
     const meta = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!);
     if (!value && ids.length === 0) return;
+    // Sending is the user's explicit navigation action. Apply it now, not when
+    // a slow acknowledgement arrives after they may have scrolled elsewhere.
+    followLatest.current = true;
+    closeFinding();
+    const pinSendStart = () => {
+      if (useDesk.getState().activeBotId !== botId) return;
+      const el = scroller.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+      lastScrollTop.current = el.scrollTop;
+      setAway(false);
+    };
+    pinSendStart();
+    requestAnimationFrame(pinSendStart);
     const ok = await sendTask(botId, value, ids, meta);
     if (ok) {
       transferQueueToSession(queued);
@@ -382,11 +462,24 @@ export function ChatView() {
   const token = liveToken;
 
   return (
-    <section className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg">
+    <section
+      className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg"
+      onTouchStart={(event) => {
+        const touch = event.touches[0];
+        swipeStart.current = touch && touch.clientX <= 28 ? { x: touch.clientX, y: touch.clientY } : null;
+      }}
+      onTouchEnd={(event) => {
+        const start = swipeStart.current;
+        swipeStart.current = null;
+        const touch = event.changedTouches[0];
+        if (!start || !touch) return;
+        if (touch.clientX - start.x >= 72 && Math.abs(touch.clientY - start.y) <= 64) leaveChat();
+      }}
+    >
       <header className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-2 pr-2">
         <button
           type="button"
-          onClick={() => setView("roster")}
+          onClick={leaveChat}
           className="grid size-11 place-items-center rounded-lg text-fg hover:bg-bg-elevated md:hidden"
           aria-label={t(locale, "chat.back")}
         >
@@ -395,24 +488,23 @@ export function ChatView() {
         <BotAvatar swatch={bot.swatch} profile={bot.profile} state={state} size={36} />
         <div className="min-w-0 flex-1 px-2">
           <p className="chat-title font-medium">{bot.name}</p>
-          <p className={cn("subhead-glyph truncate text-xs", presenceOnline || working ? "text-muted" : OFFLINE_STATUS_CLASS)}>
+          <p className={cn("subhead-glyph truncate text-xs", presenceOnline ? "status-online" : OFFLINE_STATUS_CLASS)}>
+            {presenceOnline ? <span className="presence-dot" aria-hidden="true" /> : null}
             {working ? t(locale, "chat.workingBar", { name: bot.name }) : presenceOnline ? t(locale, "status.online") : t(locale, "status.offline")}
           </p>
         </div>
         <button
           type="button"
           onClick={() => {
-            setFinding((open) => {
-              if (open) {
-                setFindQuery("");
-                setFindIndex(0);
-              }
-              return !open;
-            });
+            if (finding) closeFinding();
+            else {
+              pushSearchHistory();
+              setFinding(true);
+            }
           }}
           className={cn(
-            "grid size-11 place-items-center rounded-lg hover:bg-bg-elevated",
-            finding ? "text-accent" : "text-fg",
+            "icon-toggle grid size-11 place-items-center rounded-lg hover:bg-bg-elevated",
+            finding ? "icon-toggle-active text-accent" : "text-fg",
           )}
           aria-label={t(locale, "chat.find")}
           aria-pressed={finding}
@@ -423,10 +515,11 @@ export function ChatView() {
           type="button"
           onClick={() => pinBot(bot.id)}
           className={cn(
-            "grid size-11 place-items-center rounded-lg hover:bg-bg-elevated",
-            bot.pinned ? "text-accent" : "text-fg",
+            "icon-toggle grid size-11 place-items-center rounded-lg hover:bg-bg-elevated",
+            bot.pinned ? "icon-toggle-active text-accent" : "text-fg",
           )}
           aria-label={t(locale, "chat.pin")}
+          aria-pressed={bot.pinned}
         >
           <Pin className="size-4" strokeWidth={1.8} />
         </button>
@@ -465,11 +558,7 @@ export function ChatView() {
           </button>
           <button
             type="button"
-            onClick={() => {
-              setFinding(false);
-              setFindQuery("");
-              setFindIndex(0);
-            }}
+            onClick={closeFinding}
             className="grid size-11 place-items-center rounded-lg text-fg hover:bg-bg-elevated"
             aria-label={t(locale, "chat.findClose")}
           >
@@ -488,7 +577,11 @@ export function ChatView() {
         </button>
       ) : null}
 
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scroller} onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
+        if (finding) closeFinding();
+        else approvalDockRef.current?.collapse();
+      }} className="chat-transcript min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {thread.length === 0 && threadApprovals.length === 0 ? (
           <div className="mx-auto max-w-md pt-8">
             <p className="title-glyph font-display text-2xl font-semibold">
@@ -502,11 +595,12 @@ export function ChatView() {
               <li
                 key={m.messageId || m.id}
                 data-msg-id={m.messageId || m.id}
-                className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
+                className={cn("flex", m.role === "user" ? "justify-end" : "justify-start", m.role === "assistant" && !sentenceBubbles(m.content, m.streaming === true).length && !m.attachments?.length && "hidden")}
               >
                 {m.role === "assistant" ? (
-                  <div className="max-w-[92%] text-[0.95rem] leading-relaxed text-fg">
-                    {m.content ? <Markdown text={m.content} query={searchQuery} locale={locale} /> : null}
+                  <div className="assistant-bubble sentence-bubble min-w-0 max-w-[92%] rounded-[20px] rounded-bl-sm bg-bg-elevated px-4 py-2.5 text-[0.95rem] leading-relaxed text-fg">
+                    <Markdown text={sentenceBubbles(m.content, m.streaming === true).join("")} query={searchQuery} locale={locale} />
+                    <BubbleCopy text={sentenceBubbles(m.content, m.streaming === true).join("")} locale={locale} />
                     {m.attachments && m.attachments.length > 0 ? (
                       <div className="mt-2">
                         <MessageAttachments
@@ -520,7 +614,7 @@ export function ChatView() {
                     ) : null}
                   </div>
                 ) : (
-                  <div className="max-w-[78%] rounded-[20px] rounded-br-sm bg-user-bubble px-4 py-2.5 text-[0.95rem] leading-relaxed">
+                  <div className="min-w-0 max-w-[78%] rounded-[20px] rounded-br-sm bg-user-bubble px-4 py-2.5 text-[0.95rem] leading-relaxed">
                     {m.content ? <Markdown text={m.content} query={searchQuery} locale={locale} /> : null}
                     {m.attachments && m.attachments.length > 0 ? (
                       <div className={m.content ? "mt-2" : ""}>
@@ -533,11 +627,12 @@ export function ChatView() {
                         />
                       </div>
                     ) : null}
+                    <BubbleCopy text={m.content} locale={locale} />
                   </div>
                 )}
               </li>
             ))}
-            {threadApprovals.map((card) => (
+            {threadApprovals.filter((card) => !["pending", "submitting", "error"].includes(card.status)).map((card) => (
               <li key={card.requestId}>
                 <ApprovalCardView card={card} locale={locale} swatch={bot.swatch} profile={bot.profile} />
               </li>
@@ -559,15 +654,24 @@ export function ChatView() {
       ) : null}
 
       <div ref={composerRef} className="composer-dock shrink-0">
-        {working ? (
-          <div data-swatch={bot.swatch} className="flex shrink-0 items-center gap-2 border-t border-border px-4 py-2">
-            <BotAvatar swatch={bot.swatch} profile={bot.profile} state="working" size={22} />
-            <span className="work-track w-14" aria-hidden>
-              <i />
-            </span>
-            <p className="text-xs tracking-wide text-muted">{t(locale, "chat.workingBar", { name: bot.name })}</p>
+        {working && !threadApprovals.some((card) => ["pending", "submitting", "error"].includes(card.status)) ? (
+          <div className="mx-auto w-full max-w-2xl px-3 pt-3 pb-1" role="status">
+            <WorkTicker swatch={bot.swatch} label={t(locale, "chat.workingBar", { name: bot.name })} className="w-full" />
           </div>
         ) : null}
+        <ApprovalDock
+          key={bot.id}
+          ref={approvalDockRef}
+          name={bot.name}
+          profile={bot.profile}
+          swatch={bot.swatch}
+          working={working}
+          approvals={threadApprovals}
+          locale={locale}
+          canStop={interruptsOn}
+          stopping={stopping}
+          onStop={() => void interruptTurn()}
+        />
 
         <form
           onSubmit={(e) => {

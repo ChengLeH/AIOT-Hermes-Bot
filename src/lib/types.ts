@@ -18,6 +18,7 @@ export type ChatMessage = {
   createdAt: number;
   messageId?: string;
   pending?: boolean;
+  streaming?: boolean;
   attachments?: AttachmentDescriptor[];
 };
 

@@ -6,7 +6,7 @@ import { ChatView } from "./chat-view";
 import { SettingsView } from "./settings-view";
 import { LaunchScreen } from "./launch-screen";
 import { useDesk } from "@/lib/store";
-import { readPassword, stripKeysFromPersist } from "@/lib/secrets";
+import { readPassword, stripKeysFromPersist, credentialStorageUnavailable } from "@/lib/secrets";
 import { registerHermesServiceWorker } from "@/lib/api-helper";
 import { startHermesRuntime, resetEventCursor } from "@/lib/runtime";
 import { bindVisualViewport, setAppLayout, appLayoutFromState } from "@/lib/viewport";
@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { deepLinkFromPwaSearch, stripPwaLocationSecrets } from "@/lib/origin";
 import { consumeSetupBootstrap } from "@/lib/local-setup";
 import { getBotProfiles } from "@/lib/native-bot";
+import { historyView, pushChatHistory, seedAppHistory } from "@/lib/app-history";
 
 export function DeskApp() {
   const onboarded = useDesk((s) => s.onboarded);
@@ -70,7 +71,8 @@ export function DeskApp() {
         useDesk.getState().completeOnboarding();
       }
       const origin = useDesk.getState().connection.origin;
-      const secret = readPassword(origin);
+      const secret = await readPassword(origin);
+      if (credentialStorageUnavailable()) useDesk.getState().pushNotice(useDesk.getState().locale === "en" ? "Secure key storage is unavailable. Enter your key again after closing this page." : "無法使用安全金鑰儲存；關閉此頁面後需要重新輸入金鑰。");
       useDesk.setState((s) => ({
         connection: sanitizeHydratedConnection(s.connection, secret),
         messages: sanitizeStoredMessages(s.messages),
@@ -122,6 +124,24 @@ export function DeskApp() {
   }, [onboarded, hydrated]);
 
   useEffect(() => bindVisualViewport(), []);
+
+  useEffect(() => {
+    if (!hydrated || !onboarded) return;
+    seedAppHistory(view);
+    const onPopState = (event: PopStateEvent) => {
+      const target = historyView(event.state);
+      if (target === "chat" && useDesk.getState().activeBotId) setView("chat");
+      else if (target === "settings") setView("settings");
+      else setView("roster");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [hydrated, onboarded, setView, view]);
+
+  useEffect(() => {
+    if (!hydrated || !onboarded || view !== "chat") return;
+    if (historyView(window.history.state) !== "chat") pushChatHistory();
+  }, [hydrated, onboarded, view]);
 
   useEffect(() => {
     if (!hydrated || !onboarded) return;

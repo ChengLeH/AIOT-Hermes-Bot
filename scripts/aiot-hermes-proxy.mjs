@@ -1,3 +1,4 @@
+import { createPushService } from "./aiot-push-service.mjs";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -10,6 +11,10 @@ const execFileAsync = promisify(execFile);
 const setupTokens = new Map();
 const SETUP_TOKEN_TTL_MS = 2 * 60 * 1000;
 const runtimeFile = resolve(process.cwd(), ".aiot/runtime.json");
+let pushService;
+function localPushService() {
+  return pushService ||= createPushService({ dataDir: dirname(runtimeFile) });
+}
 
 function samePageOrigin(req) {
   const caller = req.headers.origin;
@@ -218,6 +223,13 @@ function middleware() {
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
       return proxyRequest(req, res, botTargetUrl(base, incoming));
     }
+    if (/^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup)$/.test(incoming.pathname)) {
+      const base = readRuntimeTarget();
+      if (!base) return json(res, 503, { error: "aiot_not_configured" });
+      if (!samePageOrigin(req)) return json(res, 403, { error: "origin_rejected" });
+      try { return await localPushService().handle(req, res, base); }
+      catch { return json(res, 503, { error: "notification_service_unavailable" }); }
+    }
     if (incoming.pathname === SETUP_ROUTE) return localSetup(req, res, incoming);
     if (incoming.pathname !== ROUTE) return next();
     if (!samePageOrigin(req)) {
@@ -226,7 +238,7 @@ function middleware() {
     }
     const origin = exactHttpsOrigin(incoming.searchParams.get("origin") || "");
     const path = incoming.searchParams.get("path") || "";
-    if (!origin || !path.startsWith("/api/bot/")) {
+    if (!origin || !(path.startsWith("/api/bot/") || /^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup)$/.test(path))) {
       res.statusCode = 400;
       return res.end("invalid_hermes_target");
     }
@@ -253,9 +265,13 @@ export function aiotHermesProxyPlugin() {
   return {
     name: "aiot:hermes-proxy",
     configureServer(server) {
+      const service = localPushService();
+      server.httpServer?.once("close", () => { service.close(); pushService = undefined; });
       server.middlewares.use(middleware());
     },
     configurePreviewServer(server) {
+      const service = localPushService();
+      server.httpServer?.once("close", () => { service.close(); pushService = undefined; });
       server.middlewares.use(middleware());
     },
   };

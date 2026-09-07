@@ -10,6 +10,8 @@ import {
   EYE_SWATCHES,
   eyeGapIncrease,
   eyeSwatchForProfile,
+  eyeSwatchesForProfiles,
+  eyeHex,
   hermesAgentUncropped,
   launchDuration,
   launchShouldShow,
@@ -136,3 +138,10 @@ test("chat title keeps a glyph gutter so leading G is not clipped", () => {
   assert.match(view, /className="chat-title font-medium"/);
   assert.equal(view.includes('className="subhead-glyph truncate font-medium"'), false);
 });
+
+ test("catalog allocation avoids lowercase hash collisions and remains order independent", () => {
+ const names = ["grok", "codex", "big", "codex-cli", ...Array.from({length: 30}, (_, i) => `profile-${i}`)];
+ const colors = eyeSwatchesForProfiles(names);
+ assert.equal(new Set([...colors.values()].map(eyeHex)).size, names.length);
+ assert.deepEqual(colors, eyeSwatchesForProfiles([...names].reverse()));
+ });

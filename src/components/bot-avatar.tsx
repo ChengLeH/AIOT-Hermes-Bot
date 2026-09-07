@@ -9,6 +9,7 @@ import {
   HEAD_SIZE,
   HEAD_X,
   resolveEyeSwatch,
+  eyeHex,
   type EyeSwatch,
 } from "@/lib/brand";
 
@@ -31,7 +32,7 @@ export function BotAvatar({ swatch, profile = "", state = "idle", size = 44, cla
       style={{ width: size, height: size }}
       aria-hidden
     >
-      <AiotHead className={cn("h-full w-full", cls)} />
+      <AiotHead className={cn("h-full w-full", cls)} eye={eyeHex(eye)} />
     </span>
   );
 }

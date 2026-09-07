@@ -41,7 +41,7 @@ test("approval push is generic, has no command, and deep-links profile plus conv
     conversation: "c1",
   });
   assert.equal(visible.title, "aiot");
-  assert.equal(visible.body, "");
+  assert.equal(visible.body, "Approval requested");
   assert.equal(visible.body.includes("rm"), false);
   assert.equal(visible.profile, "alpha");
   assert.equal(visible.sessionId, "c1");

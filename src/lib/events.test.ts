@@ -317,3 +317,17 @@ test("approval_expired marks the card and optional upsertApproval is safe to omi
     ),
   );
 });
+
+test('only active reply is marked streaming and terminal releases it without hiding history', () => {
+  const records = new Map<string, { text: string; streaming?: boolean }>();
+  const base = sinkRecorder().sink;
+  const sink: EventSink = { ...base, upsert: (m) => { records.set(m.messageId, { text: m.text, streaming: m.streaming }); }, setWorking: (_p, _c, active) => { if (!active) for (const m of records.values()) m.streaming = false; } };
+  const state = { cursor: 0, turns: {} as TurnMap, seen: new Set<string>() };
+  const event = (seq: number, kind: string, payload = {}) => ({ seq, kind, profile: 'alpha', conversation: 'c', payload });
+  applyEventBatch([event(1,'message',{message_id:'old',text:'Old history'}), event(2,'turn_start'), event(3,'message',{message_id:'new',text:'Partial'})],state,sink);
+  assert.equal(records.get('old')?.streaming, false);
+  assert.equal(records.get('new')?.streaming, true);
+  applyEventBatch([event(4,'turn_complete')],state,sink);
+  assert.equal(records.get('new')?.streaming, false);
+  assert.equal(records.get('new')?.text, 'Partial');
+});

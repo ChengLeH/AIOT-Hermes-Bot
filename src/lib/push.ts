@@ -23,11 +23,13 @@ function count(value: unknown): number {
 }
 
 function pushUrl(origin: string, path: string): string {
-  return `${origin}/api/pwa/push/${path}`;
+  // Notifications belong to this AIOT installation, not the Hermes server.
+  const host = typeof window === "undefined" ? origin : window.location.origin;
+  return `${host}/api/pwa/push/${path}`;
 }
 
 export async function getPushStatus(origin: string, apiKey: string): Promise<PushStatus> {
-  const res = await hermesFetch(pushUrl(origin, "status"), { apiKey });
+  const res = await hermesFetch(pushUrl(origin, "status"), { apiKey, timeoutMs: 12000 });
   if (!res.ok) throw new Error(`push status ${res.status}`);
   const json = (await res.json()) as Record<string, unknown>;
   return {
@@ -115,12 +117,13 @@ export function writePushId(origin: string, id: string): void {
 
 export async function enableWebPush(origin: string, apiKey: string): Promise<{ id: string; sourceReady: boolean }> {
   if (!canRegisterServiceWorker()) {
-    throw new Error("請在 grok.me 的 HTTPS 分頁或已安裝 PWA 開啟通知");
+    throw new Error("請在 AIOT 的 HTTPS 網址或已安裝的 PWA 開啟通知");
   }
-  const status = await getPushStatus(origin, apiKey);
-  if (!status.publicKey) throw new Error("閘道未提供 VAPID publicKey");
+  if (!("Notification" in window) || !("PushManager" in window)) throw new Error("此瀏覽器不支援推播通知");
   const permission = await Notification.requestPermission();
   if (permission !== "granted") throw new Error("尚未允許通知");
+  const status = await getPushStatus(origin, apiKey);
+  if (!status.publicKey) throw new Error("AIOT 尚未提供通知金鑰");
   const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.subscribe({

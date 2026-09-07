@@ -1,0 +1,31 @@
+# Changelog / 更新內容
+
+## 0.1.1
+
+### English
+
+- Encrypt browser connection credentials with AES-256-GCM and a non-extractable Web Crypto key in IndexedDB; migrate legacy plaintext storage and use memory-only fallback when encrypted persistence is unavailable. This does not claim protection against same-origin XSS.
+
+- Improve mobile chat wrapping, navigation, syntax-colored code and per-message copy controls. Open each Bot at its latest message and jump to latest after sending; incoming replies preserve your position when you scroll up to read.
+- Buffer streamed replies at sentence boundaries inside one bubble per message, with a short arrival animation; keep Markdown blocks intact and flush unfinished text when the turn ends.
+- Keep genuine Hermes approval cards with server-provided permission choices, muted status colors, collapsible details and request timestamps. Approved cards fade away after 30 seconds. Unknown server timeouts are shown as unavailable.
+- Restore the working indicator and give discovered Bots distinct muted eye colors.
+- Add an AIOT-owned Web Push relay that resumes subscriptions when AIOT restarts. Notifications contain generic notices rather than chat or command contents.
+- Remove task/workflow cards: the current Bot API does not expose structured todo or scheduled-job state.
+- Add English and Traditional Chinese installation guidance, matching-language synthetic approval previews, and CI checks.
+
+Validation: local macOS and Android checks; Windows and iPhone installation remain unverified. Approval background notification delivery and mobile command suggestions still need further end-to-end checks.
+
+### 繁體中文
+
+- 手機連線憑證改用 AES-256-GCM 與不可直接匯出的 Web Crypto 金鑰保存在 IndexedDB；遷移舊明文，無法加密保存時僅使用記憶體並提示。此機制不宣稱能防禦同站 XSS。
+
+- 改善手機聊天換行、返回操作、程式碼語法配色，新增每則訊息的複製按鈕。進入各 Bot 或送出訊息時定位最新訊息；Bot 回覆時不打斷主動往上閱讀的位置。
+- 串流回覆先累積成完整句子再顯示，同一則回覆維持同一顆氣泡與進場動畫；Markdown 區塊保持完整，回合結束時顯示剩餘文字。
+- 保留真正由 Hermes 發出的批准卡，權限選項依後端提供；加入灰調狀態色、可收合內容與送出時間。已批准卡保留 30 秒後淡出；未提供的逾時資訊如實標示。
+- 恢復工作中動畫，動態發現的 Bot 使用不同灰調眼睛顏色。
+- 新增由 AIOT 運行的 Web Push 轉送服務，重啟後自動恢復訂閱；通知使用一般提醒，不含聊天或指令內容。
+- 移除工作／任務卡：目前 Bot API 未提供結構化待辦或排程工作狀態。
+- 補上中英文安裝說明、對應語言的虛構批准卡示意圖與 CI 檢查。
+
+驗證範圍：本機 macOS 與 Android；Windows、iPhone 安裝仍未驗證。批准的背景通知與手機指令選單仍需進一步端到端測試。

@@ -13,9 +13,10 @@ export const EYE_SWATCHES = [
   { id: "stone", hex: "#787874", label: "灰石" },
 ] as const;
 
-export type EyeSwatch = (typeof EYE_SWATCHES)[number]["id"];
+type NamedEyeSwatch = (typeof EYE_SWATCHES)[number]["id"];
+export type EyeSwatch = NamedEyeSwatch | `#${string}`;
 
-const EYE_IDS: EyeSwatch[] = EYE_SWATCHES.map((item) => item.id);
+const EYE_IDS: NamedEyeSwatch[] = EYE_SWATCHES.map((item) => item.id);
 
 export function profileHash(profile: string): number {
   let h = 0;
@@ -23,9 +24,34 @@ export function profileHash(profile: string): number {
   return Math.abs(h);
 }
 
-export function eyeSwatchForProfile(profile: string): EyeSwatch {
+export function eyeSwatchForProfile(profile: string): NamedEyeSwatch {
   const id = profile.trim();
   return EYE_IDS[profileHash(id) % EYE_IDS.length] ?? "moss";
+}
+
+/** Allocate across the catalog so hash collisions never share an eye color. */
+export function eyeSwatchesForProfiles(profiles: string[]): Map<string, EyeSwatch> {
+  const result = new Map<string, EyeSwatch>();
+  const used = new Set<string>();
+  for (const profile of [...new Set(profiles)].sort()) {
+    const start = profileHash(profile) % EYE_IDS.length;
+    let swatch: EyeSwatch | undefined;
+    for (let offset = 0; offset < EYE_IDS.length; offset++) {
+      const candidate = EYE_IDS[(start + offset) % EYE_IDS.length]!;
+      if (!used.has(eyeHex(candidate))) { swatch = candidate; break; }
+    }
+    // Additional profiles receive low-chroma RGB colors, never a repeated palette entry.
+    let seed = profileHash(profile);
+    while (!swatch) {
+      const channels = [96 + seed % 48, 96 + Math.floor(seed / 48) % 48, 96 + Math.floor(seed / 2304) % 48];
+      const candidate = `#${channels.map((v) => v.toString(16).padStart(2, "0")).join("")}` as EyeSwatch;
+      if (!used.has(candidate)) swatch = candidate;
+      seed++;
+    }
+    result.set(profile, swatch);
+    used.add(eyeHex(swatch));
+  }
+  return result;
 }
 
 export function isEyeSwatch(value: string | null | undefined): value is EyeSwatch {
@@ -34,10 +60,12 @@ export function isEyeSwatch(value: string | null | undefined): value is EyeSwatc
 
 export function resolveEyeSwatch(swatch: string | null | undefined, profile: string): EyeSwatch {
   if (isEyeSwatch(swatch)) return swatch;
+  if (swatch && /^#[0-9a-f]{6}$/.test(swatch)) return swatch as EyeSwatch;
   return eyeSwatchForProfile(profile);
 }
 
 export function eyeHex(swatch: EyeSwatch): string {
+  if (/^#[0-9a-f]{6}$/.test(swatch)) return swatch;
   return EYE_SWATCHES.find((item) => item.id === swatch)?.hex ?? BRAND_EYE;
 }
 

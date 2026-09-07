@@ -1,0 +1,46 @@
+name: Validate AIOT
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check public source boundaries
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import pathlib, re, subprocess
+          files = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          failures = []
+          for name in filter(None, files):
+              path = pathlib.Path(name)
+              if '.aiot' in path.parts or (path.name.startswith('.env') and path.name not in ('.env.example', '.env.sample')):
+                  failures.append(name)
+                  continue
+              if not path.is_file():
+                  continue
+              content = path.read_bytes()
+              if re.search(rb'tail[a-z0-9]{4,}\.ts\.net', content, re.I):
+                  failures.append(name)
+              if re.search(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----', content):
+                  failures.append(name)
+          if failures:
+              raise SystemExit('Private runtime or credential material in: ' + ', '.join(sorted(set(failures))))
+          PYCODE
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: node --test scripts/*.test.mjs
+      - run: npm run build
+        env:
+          VITE_AUTH_ENABLED: 'false'

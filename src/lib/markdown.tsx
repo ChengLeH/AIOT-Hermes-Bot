@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { highlightPieces } from "./chat-search";
+import { codeTokens } from "./code-highlight";
 import { t, type Locale } from "./locale";
 
 export function Markdown({
@@ -191,7 +192,13 @@ function CodeBlock({
         </button>
       </div>
       <pre>
-        <code>{mark(text, query, "code")}</code>
+        <code>
+          {codeTokens(text, lang).map((token, index) => (
+            <span key={index} className={`tok-${token.kind}`}>
+              {mark(token.text, query, `code-${index}`)}
+            </span>
+          ))}
+        </code>
       </pre>
     </div>
   );

@@ -1,3 +1,4 @@
+import { browserCredentialVault, type CredentialVault } from "./credential-vault.ts";
 import { memoryStorage, type SessionStorage } from "./session.ts";
 import { normalizeHttpsOrigin } from "./origin.ts";
 
@@ -14,13 +15,9 @@ export function passwordStorageKey(origin: string): string {
   return `${PASSWORD_PREFIX}${origin}`;
 }
 
-export function withSecretStores<T>(stores: SecretStores, fn: () => T): T {
+export async function withSecretStores<T>(stores: SecretStores, fn: () => T | Promise<T>): Promise<T> {
   storesOverride = stores;
-  try {
-    return fn();
-  } finally {
-    storesOverride = null;
-  }
+  try { return await fn(); } finally { storesOverride = null; }
 }
 
 export function memorySecretStores(initial?: { persistent?: Record<string, string>; session?: Record<string, string> }): SecretStores {
@@ -67,16 +64,6 @@ function readStore(store: SessionStorage | null, key: string): string {
   }
 }
 
-function writeStore(store: SessionStorage | null, key: string, value: string): void {
-  if (!store) return;
-  try {
-    if (!value) store.removeItem(key);
-    else store.setItem(key, value);
-  } catch {
-    /* private mode */
-  }
-}
-
 function removeStore(store: SessionStorage | null, key: string): void {
   if (!store) return;
   try {
@@ -95,61 +82,70 @@ function originCandidates(origin: string): string[] {
   return out;
 }
 
-export function readPassword(origin: string): string {
-  if (!origin.trim()) return "";
-  const persistent = persistentStore();
-  const session = sessionStore();
-  const candidates = originCandidates(origin);
-  if (candidates.length === 0) return "";
-  const bound = candidates[0]!;
-  for (const candidate of candidates) {
-    const stored = readStore(persistent, passwordStorageKey(candidate));
-    if (stored) {
-      if (candidate !== bound) {
-        writeStore(persistent, passwordStorageKey(bound), stored);
-        removeStore(persistent, passwordStorageKey(candidate));
-      }
-      for (const name of candidates) removeStore(session, passwordStorageKey(name));
-      return stored;
-    }
-  }
-  for (const candidate of candidates) {
-    const legacy = readStore(session, passwordStorageKey(candidate));
-    if (!legacy) continue;
-    writeStore(persistent, passwordStorageKey(bound), legacy);
-    for (const name of candidates) removeStore(session, passwordStorageKey(name));
-    return legacy;
-  }
-  return "";
+let vault: CredentialVault = browserCredentialVault();
+let queue: Promise<unknown> = Promise.resolve();
+const volatile = new Map<string, string>();
+let storageIssue = false;
+export function credentialStorageUnavailable(): boolean { return storageIssue; }
+export function setCredentialVaultForTests(value: CredentialVault): void { vault = value; volatile.clear(); storageIssue = false; }
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const next = queue.then(fn, fn);
+  queue = next.catch(() => {});
+  return next;
 }
-
-export function writePassword(origin: string, value: string): void {
+function eraseLegacy(origin?: string): void {
+  if (!origin) { clearPasswordPrefix(persistentStore()); clearPasswordPrefix(sessionStore()); return; }
+  for (const candidate of originCandidates(origin)) {
+    removeStore(persistentStore(), passwordStorageKey(candidate));
+    removeStore(sessionStore(), passwordStorageKey(candidate));
+  }
+}
+export function readPassword(origin: string): Promise<string> {
   const bound = boundPasswordOrigin(origin);
-  if (!bound) return;
-  const persistent = persistentStore();
-  const session = sessionStore();
-  const trimmed = value.trim();
-  writeStore(persistent, passwordStorageKey(bound), trimmed);
-  removeStore(session, passwordStorageKey(bound));
-  const raw = origin.trim();
-  if (raw && raw !== bound) {
-    removeStore(persistent, passwordStorageKey(raw));
-    removeStore(session, passwordStorageKey(raw));
-  }
-}
-
-export function clearPassword(origin?: string): void {
-  const persistent = persistentStore();
-  const session = sessionStore();
-  if (origin && origin.trim()) {
-    for (const candidate of originCandidates(origin)) {
-      removeStore(persistent, passwordStorageKey(candidate));
-      removeStore(session, passwordStorageKey(candidate));
+  return serialized(async () => {
+    if (!bound) return "";
+    const legacyEntries = new Map<string, string>();
+    for (const store of [persistentStore(), sessionStore()]) {
+      try {
+        for (let i = 0; i < (store?.length ?? 0); i++) {
+          const name = store?.key?.(i);
+          if (!name?.startsWith(PASSWORD_PREFIX)) continue;
+          const legacyOrigin = boundPasswordOrigin(name.slice(PASSWORD_PREFIX.length));
+          const value = readStore(store, name);
+          if (legacyOrigin && value && !legacyEntries.has(legacyOrigin)) legacyEntries.set(legacyOrigin, value);
+        }
+      } catch { storageIssue = true; }
     }
-    return;
-  }
-  clearPasswordPrefix(persistent);
-  clearPasswordPrefix(session);
+    for (const [legacyOrigin, value] of legacyEntries) {
+      volatile.set(legacyOrigin, value);
+      try { await vault.write(legacyOrigin, value); } catch { storageIssue = true; }
+    }
+    // Preserve every readable legacy connection in the vault (or memory on failure).
+    eraseLegacy();
+    if (volatile.has(bound)) return volatile.get(bound)!;
+    try { return await vault.read(bound); } catch { storageIssue = true; return ""; }
+  });
+}
+export function writePassword(origin: string, value: string): Promise<void> {
+  const bound = boundPasswordOrigin(origin);
+  const trimmed = value.trim();
+  // Never fall back to plaintext storage, even if IndexedDB or crypto is unavailable.
+  eraseLegacy(origin);
+  return serialized(async () => {
+    if (!bound) return;
+    volatile.set(bound, trimmed);
+    try { if (trimmed) await vault.write(bound, trimmed); else await vault.clear(bound); }
+    catch { storageIssue = true; }
+  });
+}
+export function clearPassword(origin?: string): Promise<void> {
+  eraseLegacy(origin);
+  return serialized(async () => {
+    const bound = origin ? boundPasswordOrigin(origin) : undefined;
+    if (origin && !bound) return;
+    if (bound) volatile.delete(bound); else volatile.clear();
+    try { await vault.clear(bound); } catch { storageIssue = true; }
+  });
 }
 
 function clearPasswordPrefix(store: SessionStorage | null): void {

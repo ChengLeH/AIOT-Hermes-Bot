@@ -30,6 +30,7 @@ export type EventSink = {
     role: "user" | "assistant";
     text: string;
     keepRole?: boolean;
+    streaming?: boolean;
     attachments?: AttachmentDescriptor[];
   }) => void;
   setWorking: (profile: string, conversation: string, working: boolean) => void;
@@ -104,6 +105,7 @@ export function applyBotEvent(
       role,
       text,
       keepRole: kind === "edit",
+      streaming: role === "assistant" && turn.active,
       attachments: parseAttachmentList(payload.attachments),
     });
     return { cursor: advanceCursor(ev.seq, cursor), applied: true };

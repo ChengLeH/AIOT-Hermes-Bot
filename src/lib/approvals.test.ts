@@ -24,6 +24,15 @@ const BASE = {
   status: "pending" as const,
 };
 
+test("approval timeout comes from Hermes and survives storage without inventing a default", () => {
+  const input = { profile: "alpha", conversation: "c1", payload: { request_id: "req-time", choices: ["once", "deny"], created_at: 1700000000000, timeout_seconds: 600 } };
+  const card = parseApprovalCard(input)!;
+  assert.equal(card.timeoutSeconds, 600);
+  assert.equal(sanitizeStoredApprovals([card])[0]?.timeoutSeconds, 600);
+  assert.equal(parseApprovalCard({ ...input, payload: { ...input.payload, timeout_seconds: undefined } })?.timeoutSeconds, undefined);
+  assert.equal(parseApprovalCard({ ...input, payload: { ...input.payload, timeout_seconds: -1 } })?.timeoutSeconds, undefined);
+});
+
 test("approval POST body is only profile conversation choice", () => {
   const body = approvalBody({ profile: "alpha", conversation: "c1", choice: "once" });
   assert.deepEqual(Object.keys(body).sort(), ["choice", "conversation", "profile"]);
@@ -70,6 +79,14 @@ test("merge by request_id keeps command on resolved replay and does not duplicat
   assert.equal(list.length, 1);
   assert.equal(list[0]?.status, "approved");
   assert.equal(list[0]?.command, "git status");
+});
+
+test("resolution preserves original request timestamp and timeout", () => {
+  const first = { ...BASE, createdAt: 1700000000000, timeoutSeconds: 600 };
+  const event = applyApprovalEvent("approval_resolved", { ...BASE, createdAt: 1700000600000, status: "approved" }, first)!;
+  const merged = mergeApproval([first], event)[0]!;
+  assert.equal(merged.createdAt, first.createdAt);
+  assert.equal(merged.timeoutSeconds, 600);
 });
 
 test("replayed request does not reopen an approved or expired card", () => {

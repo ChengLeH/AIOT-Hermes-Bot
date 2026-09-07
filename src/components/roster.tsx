@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Search, Settings } from "lucide-react";
+import { Pin, Search, Settings } from "lucide-react";
 import { BotAvatar } from "./bot-avatar";
 import { BrandMark } from "./brand-mark";
 import { lastMessageFor, useDesk } from "@/lib/store";
@@ -7,6 +7,7 @@ import { cn, formatAge } from "@/lib/utils";
 import { countLabel, localizeNotice, resolveLocale, t } from "@/lib/locale";
 import type { Bot } from "@/lib/bots";
 import type { ChatMessage } from "@/lib/types";
+import { pushChatHistory } from "@/lib/app-history";
 import {
   botPresenceOnline,
   connectionLive,
@@ -58,7 +59,7 @@ export function Roster({ className = "" }: { className?: string }) {
           (last?.content ?? "").toLowerCase().includes(q)
         );
       })
-      .sort((a, b) => (b.last?.createdAt ?? 0) - (a.last?.createdAt ?? 0));
+      .sort((a, b) => Number(b.bot.pinned) - Number(a.bot.pinned) || (b.last?.createdAt ?? 0) - (a.last?.createdAt ?? 0));
   }, [bots, messages, botState, search]);
 
   return (
@@ -111,7 +112,10 @@ export function Roster({ className = "" }: { className?: string }) {
               <BotRow
                 key={row.bot.id}
                 row={row}
-                onOpen={openBot}
+                onOpen={(id) => {
+                  pushChatHistory();
+                  openBot(id);
+                }}
                 activity={localizeNotice(locale, activity[row.bot.id]?.at(-1)?.label)}
                 locale={locale}
                 live={live}
@@ -150,8 +154,11 @@ function BotRow({
         <BotAvatar swatch={bot.swatch} profile={bot.profile} state={state} size={48} className="mb-1" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2">
-            <span className={`subhead-glyph truncate font-medium ${online ? "" : "text-muted"}`}>
-              {bot.name}
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className={`subhead-glyph truncate font-medium ${online ? "" : "text-muted"}`}>
+                {bot.name}
+              </span>
+              {bot.pinned ? <Pin className="size-3.5 shrink-0 text-accent" strokeWidth={1.9} aria-label={t(locale, "chat.pin")} /> : null}
             </span>
             <span className="shrink-0 text-xs tabular-nums text-subtle">
               {working ? t(locale, "roster.working") : last ? formatAge(last.createdAt, Date.now(), locale) : ""}

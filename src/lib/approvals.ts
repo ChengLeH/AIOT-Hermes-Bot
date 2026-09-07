@@ -10,6 +10,8 @@ export type ApprovalCard = {
   description: string;
   choices: ApprovalChoice[];
   createdAt: number;
+  timeoutSeconds?: number;
+  resolvedAt?: number;
   status: ApprovalStatus;
   lastChoice?: ApprovalChoice;
   confirmAlways?: boolean;
@@ -71,6 +73,7 @@ export function parseApprovalCard(input: {
     description: stripApprovalSecrets(typeof payload.description === "string" ? payload.description : ""),
     choices: parseApprovalChoices(payload.choices),
     createdAt,
+    timeoutSeconds: typeof payload.timeout_seconds === "number" && Number.isFinite(payload.timeout_seconds) && payload.timeout_seconds > 0 ? payload.timeout_seconds : undefined,
     status: "pending",
   };
 }
@@ -113,6 +116,8 @@ export function applyApprovalEvent(
     command: card?.command || prev?.command || "",
     description: card?.description || prev?.description || "",
     choices: card?.choices?.length ? card.choices : prev?.choices ?? [],
+    createdAt: prev && card ? Math.min(prev.createdAt, card.createdAt) : (prev ?? card!).createdAt,
+    timeoutSeconds: prev?.timeoutSeconds ?? card?.timeoutSeconds,
   };
   if (kind === "approval_expired") return { ...base, status: "expired", confirmAlways: false };
   if (kind === "approval_resolved") {
@@ -135,6 +140,7 @@ export function applyApprovalEvent(
 
 export function mergeApproval(list: ApprovalCard[], next: ApprovalCard): ApprovalCard[] {
   const safe = sanitizeApproval(next);
+  if (safe.status === "approved" && !safe.resolvedAt) safe.resolvedAt = Date.now();
   const idx = list.findIndex((item) => item.requestId === safe.requestId);
   if (idx < 0) return [...list, safe].slice(-100);
   const current = list[idx]!;
@@ -145,6 +151,9 @@ export function mergeApproval(list: ApprovalCard[], next: ApprovalCard): Approva
     command: safe.command || current.command,
     description: safe.description || current.description,
     choices: safe.choices.length > 0 ? safe.choices : current.choices,
+    createdAt: Math.min(current.createdAt, safe.createdAt),
+    timeoutSeconds: current.timeoutSeconds ?? safe.timeoutSeconds,
+    resolvedAt: current.resolvedAt ?? safe.resolvedAt,
     status: mergeApprovalStatus(current.status, safe.status),
     lastChoice: safe.lastChoice ?? current.lastChoice,
     confirmAlways: next.confirmAlways ?? current.confirmAlways,
@@ -162,6 +171,8 @@ export function sanitizeApproval(card: ApprovalCard): ApprovalCard {
     description: stripApprovalSecrets(card.description),
     choices: card.choices.filter(isApprovalChoice),
     createdAt: card.createdAt,
+    resolvedAt: card.resolvedAt,
+    timeoutSeconds: typeof card.timeoutSeconds === "number" && Number.isFinite(card.timeoutSeconds) && card.timeoutSeconds > 0 ? card.timeoutSeconds : undefined,
     status: card.status,
     lastChoice: card.lastChoice,
     errorKind: card.errorKind,
