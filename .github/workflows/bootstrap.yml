@@ -1,0 +1,23 @@
+name: Publish AIOT v0.1
+on:
+  push:
+    paths:
+      - AIOT-Hermes-Bot-v0.1.tar.gz
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack the public release
+        run: tar -xzf AIOT-Hermes-Bot-v0.1.tar.gz --strip-components=1
+      - name: Replace bootstrap files with the release
+        run: rm -f AIOT-Hermes-Bot-v0.1.tar.gz .github/workflows/bootstrap.yml
+      - name: Publish v0.1
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: publish AIOT / Hermes Bot v0.1"
+          git push
