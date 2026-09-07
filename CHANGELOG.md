@@ -4,6 +4,9 @@
 
 ### English
 
+- Handle actual Hermes turn-completion events for reply notifications, without duplicate pushes; show dynamic slash/mention suggestions using the complete trigger token.
+- Restore historical events without replaying stale typing indicators; publish the current conversation state after catch-up.
+
 - Fix clean installation in CI by restoring the missing locked optional dependency.
 
 - Encrypt browser connection credentials with AES-256-GCM and a non-extractable Web Crypto key in IndexedDB; migrate legacy plaintext storage and use memory-only fallback when encrypted persistence is unavailable. This does not claim protection against same-origin XSS.
@@ -16,9 +19,12 @@
 - Remove task/workflow cards: the current Bot API does not expose structured todo or scheduled-job state.
 - Add English and Traditional Chinese installation guidance, matching-language synthetic approval previews, and CI checks.
 
-Validation: local macOS and Android checks; Windows and iPhone installation remain unverified. Approval background notification delivery and mobile command suggestions still need further end-to-end checks.
+Validation: local macOS and Android checks; Windows and iPhone installation remain unverified. Real reply notifications and mobile command suggestions were verified on Android. Background approval notifications still need further end-to-end checks.
 
 ### 繁體中文
+
+- 支援 Hermes 真正的回合完成事件以發送回覆通知，避免重複推送；保留完整觸發符號以顯示動態斜線與提及選單。
+- 還原歷史事件時不再重播舊的正在輸入狀態，同步完成後才顯示目前對話的工作狀態。
 
 - 補齊遺漏的選用依賴鎖定資料，修正 CI 乾淨安裝失敗。
 
@@ -32,4 +38,4 @@ Validation: local macOS and Android checks; Windows and iPhone installation rema
 - 移除工作／任務卡：目前 Bot API 未提供結構化待辦或排程工作狀態。
 - 補上中英文安裝說明、對應語言的虛構批准卡示意圖與 CI 檢查。
 
-驗證範圍：本機 macOS 與 Android；Windows、iPhone 安裝仍未驗證。批准的背景通知與手機指令選單仍需進一步端到端測試。
+驗證範圍：本機 macOS 與 Android；Windows、iPhone 安裝仍未驗證。Android 已驗證實際回覆通知與手機指令選單；批准的背景通知仍需進一步端到端測試。

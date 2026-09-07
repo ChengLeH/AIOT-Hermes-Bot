@@ -64,3 +64,49 @@ test('restarted service resumes persisted subscriptions without a browser reques
     assert.equal(sent[0].body, 'Approval requested');
   } finally { service.close(); rmSync(dataDir, {recursive: true, force: true}); }
 });
+
+test('actual Hermes turn completion notifies once across legacy events and restart', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiot-push-turn-'));
+  const events = [];
+  const sent = [];
+  const append = (kind, event_id, payload = {}) => events.push({seq: events.length + 1, kind, event_id, profile: 'demo', conversation: 'chat', payload});
+  const options = {
+    dataDir, pollMs: 999999,
+    fetchImpl: async url => ({ok: true, json: async () => url.includes('/profiles') ? {profiles: []} : {events: events.filter(e => e.seq > Number(new URL(url).searchParams.get('after')))}}),
+    send: async (_sub, payload) => sent.push(JSON.parse(payload)),
+  };
+  append('turn_complete', 'historical', {outcome: 'success', notify: false});
+  let service = createPushService(options);
+  try {
+    const req = Readable.from([JSON.stringify({subscription: sub})]);
+    req.url = '/api/pwa/push/subscribe'; req.method = 'POST'; req.headers = {authorization: 'Bearer test'};
+    await service.handle(req, {writeHead: code => assert.equal(code, 200), end() {}}, 'http://hermes.test/api/bot');
+    append('complete', 'historical');
+    append('turn_start', 'actual', {notify: false});
+    append('edit', 'actual', {finalize: true, text: 'private answer', notify: false});
+    await service.tick();
+    assert.equal(sent.length, 0, 'edits and enrollment history must not notify');
+    append('turn_complete', 'actual', {outcome: 'success', notify: false});
+    await service.tick();
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].body, 'New reply');
+    assert.equal(sent[0].kind, 'complete');
+    assert.equal(sent[0].sessionId, 'chat');
+    assert.ok(!JSON.stringify(sent).includes('private answer'));
+    service.close(); service = createPushService(options);
+    append('complete', 'actual');
+    append('turn_complete', 'failed', {outcome: 'failure'});
+    append('turn_complete', 'cancelled', {outcome: 'cancelled'});
+    append('complete', 'failed');
+    await service.tick();
+    assert.equal(sent.length, 1, 'restart keeps turn deduplication; failures are not replies');
+    append('complete', 'legacy-first');
+    await service.tick();
+    append('turn_complete', 'legacy-first', {outcome: 'success'});
+    await service.tick();
+    assert.equal(sent.length, 2, 'either terminal order delivers only once');
+    append('turn_complete', 'next', {outcome: 'success', notify: false});
+    await service.tick();
+    assert.equal(sent.length, 3, 'the next turn in the same conversation still notifies');
+  } finally {service.close(); rmSync(dataDir, {recursive: true, force: true});}
+});

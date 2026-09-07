@@ -331,3 +331,22 @@ test('only active reply is marked streaming and terminal releases it without hid
   assert.equal(records.get('new')?.streaming, false);
   assert.equal(records.get('new')?.text, 'Partial');
 });
+
+
+test("paginated startup history never shows old working states; final active turn survives", async () => {
+  const { replayEventSink, finishEventReplay } = await import("./events.ts");
+  const calls: [string, boolean][] = [];
+  const state = { cursor: 0, turns: {} as TurnMap, seen: new Set<string>() };
+  const target = { upsert: () => {}, setWorking: (p: string, _c: string, active: boolean) => calls.push([p, active]), activity: () => {}, notice: () => {} };
+  const event = (seq: number, profile: string, kind: string) => ({ seq, profile, conversation: "current", kind });
+  applyEventBatch([event(1, "idle", "turn_start"), event(2, "busy", "turn_start")], state, replayEventSink(target));
+  assert.deepEqual(calls, []);
+  applyEventBatch([event(3, "idle", "turn_complete")], state, replayEventSink(target));
+  assert.deepEqual(calls, []);
+  // An unfinished turn in an older conversation must not mark the current one busy.
+  applyEventBatch([{ seq: 4, profile: "idle", conversation: "old", kind: "turn_start" }], state, replayEventSink(target));
+  finishEventReplay(state.turns, [{profile: "idle", conversation: "current"}, {profile: "busy", conversation: "current"}], target);
+  assert.deepEqual(calls, [["idle", false], ["busy", true]]);
+  applyEventBatch([event(5, "busy", "turn_complete")], state, target);
+  assert.deepEqual(calls.at(-1), ["busy", false]);
+});

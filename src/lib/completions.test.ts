@@ -46,7 +46,7 @@ test("@ tokens match at a whitespace boundary", () => {
   assert.equal(detectCompletionToken("hi@co", 5), null);
 });
 
-test("query never includes the trigger character for /h3 or @g", () => {
+test("local filtering strips triggers but the Hermes wire query retains exactly one", () => {
   assert.equal(stripTriggerFromQuery("/", "h3"), "h3");
   assert.equal(stripTriggerFromQuery("/", "/h3"), "h3");
   assert.equal(stripTriggerFromQuery("/", "//h3"), "h3");
@@ -60,7 +60,7 @@ test("query never includes the trigger character for /h3 or @g", () => {
     trigger: "/",
     query: "/h3",
   });
-  assert.deepEqual(slash, { profile: "alpha", conversation: "c1", trigger: "/", query: "h3" });
+  assert.deepEqual(slash, { profile: "alpha", conversation: "c1", trigger: "/", query: "/h3" });
   assert.equal(assertCompletionBodySafe(slash), true);
   const at = completionBody({
     profile: "alpha",
@@ -68,10 +68,10 @@ test("query never includes the trigger character for /h3 or @g", () => {
     trigger: "@",
     query: "@g",
   });
-  assert.deepEqual(at, { profile: "alpha", conversation: "c1", trigger: "@", query: "g" });
+  assert.deepEqual(at, { profile: "alpha", conversation: "c1", trigger: "@", query: "@g" });
   assert.equal(assertCompletionBodySafe(at), true);
-  assert.equal(assertCompletionBodySafe({ ...slash, query: "/h3" }), false);
-  assert.equal(assertCompletionBodySafe({ ...at, query: "@g" }), false);
+  assert.equal(assertCompletionBodySafe({ ...slash, query: "h3" }), false);
+  assert.equal(assertCompletionBodySafe({ ...at, query: "g" }), false);
 });
 
 test("Android IME composition span uses selectionEnd so query stays h3/g not /h3/@g", () => {
@@ -194,7 +194,7 @@ test("arrow wrapping stays in range", () => {
   assert.equal(moveCompletionIndex(0, 1, 0), 0);
 });
 
-test("composer posts stripped query and reads the IME composition span caret", () => {
+test("composer posts the Hermes token query and reads the IME composition span caret", () => {
   const view = readFileSync(new URL("../components/chat-view.tsx", import.meta.url), "utf8");
   assert.equal(view.includes("completionCaretPosition"), true);
   assert.equal(view.includes("filterCompletionItems"), true);
@@ -202,4 +202,13 @@ test("composer posts stripped query and reads the IME composition span caret", (
   const native = readFileSync(new URL("./native-bot.ts", import.meta.url), "utf8");
   assert.equal(native.includes("completionBody(input)"), true);
   assert.equal(native.includes("/api/bot/completions"), true);
+});
+
+// Captures the real Bot API contract: an empty bare query returns 400.
+test("bare slash and at sign request the server catalog; containers stay navigable", () => {
+  for (const trigger of ["/", "@"] as const) {
+    assert.equal(completionBody({profile: "example", conversation: "c", trigger, query: ""}).query, trigger);
+  }
+  const [item] = parseCompletionItems({items: [{label: "@file:", insert: "@file:", is_container: true}]});
+  assert.equal(applyCompletionInsert("@", detectCompletionToken("@", 1)!, item!).text, "@file:");
 });

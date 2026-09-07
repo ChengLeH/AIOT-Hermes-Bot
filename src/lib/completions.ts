@@ -82,7 +82,8 @@ export function completionBody(input: {
     profile: input.profile,
     conversation: input.conversation,
     trigger: input.trigger,
-    query: stripTriggerFromQuery(input.trigger, input.query),
+    // Hermes expects the complete token, including its slash or at sign.
+    query: `${input.trigger}${stripTriggerFromQuery(input.trigger, input.query)}`,
   };
 }
 
@@ -94,14 +95,14 @@ export function assertCompletionBodySafe(body: Record<string, unknown>): boolean
   }
   if (typeof body.trigger !== "string" || (body.trigger !== "/" && body.trigger !== "@")) return false;
   if (typeof body.query !== "string") return false;
-  if (body.query.startsWith("/") || body.query.startsWith("@")) return false;
+  if (!body.query.startsWith(body.trigger)) return false;
   return FORBIDDEN_COMPLETION_KEYS.every((key) => !(key in body));
 }
 
 function isFolderItem(row: Record<string, unknown>): boolean {
   const kind = String(row.kind ?? row.type ?? "").toLowerCase();
   if (kind === "folder" || kind === "container") return true;
-  return row.folder === true || row.container === true;
+  return row.folder === true || row.container === true || row.is_container === true;
 }
 
 function mentionKind(row: Record<string, unknown>): "text" | "agent" {

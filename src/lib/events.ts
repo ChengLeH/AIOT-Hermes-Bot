@@ -185,3 +185,18 @@ export function applyEventBatch(
   }
   return applied;
 }
+
+/** During initial history catch-up, keep lifecycle state internal until all pages arrive. */
+export function replayEventSink(sink: EventSink): EventSink {
+  return { ...sink, setWorking: () => {}, activity: () => {}, notice: () => {} };
+}
+
+export function finishEventReplay(
+  turns: TurnMap,
+  conversations: { profile: string; conversation: string }[],
+  sink: EventSink,
+): void {
+  for (const { profile, conversation } of conversations) {
+    sink.setWorking(profile, conversation, turns[turnKey(profile, conversation)]?.active === true);
+  }
+}

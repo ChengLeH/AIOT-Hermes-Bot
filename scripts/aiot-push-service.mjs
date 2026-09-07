@@ -52,8 +52,21 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
         if (!Number.isSafeInteger(event.seq) || event.seq <= (source.cursor || 0)) continue;
         source.cursor = event.seq;
         source.pending ||= [];
-        if (notify && ['complete', 'approval_request'].includes(event.kind)) {
-          const payload = { title: 'aiot', body: event.kind === 'approval_request' ? 'Approval requested' : 'New reply', kind: event.kind, profile: event.profile, sessionId: event.conversation, tag: `aiot:${event.kind}:${event.profile}:${event.event_id}` };
+        const completion = event.kind === 'complete' || event.kind === 'turn_complete';
+        // Hermes' notify flag controls its native notifier, not the user's AIOT subscription.
+        // Both protocol versions can announce the same turn; persist their shared identity
+        // even during enrollment so a later legacy terminal cannot replay skipped history.
+        const turnId = JSON.stringify([event.profile, event.conversation, event.event_id || `seq:${event.seq}`]);
+        source.completedTurns ||= [];
+        const duplicate = completion && source.completedTurns.includes(turnId);
+        if (completion && !duplicate) {
+          source.completedTurns.push(turnId);
+          source.completedTurns = source.completedTurns.slice(-2048);
+        }
+        const successful = completion && (!event.payload?.outcome || event.payload.outcome === 'success');
+        if (notify && (event.kind === 'approval_request' || (successful && !duplicate))) {
+          const kind = event.kind === 'approval_request' ? 'approval_request' : 'complete';
+          const payload = { title: 'aiot', body: kind === 'approval_request' ? 'Approval requested' : 'New reply', kind, profile: event.profile, sessionId: event.conversation, tag: `aiot:${kind}:${event.profile}:${event.conversation}:${event.event_id || event.seq}` };
           source.pending.push({ payload, ids: Object.keys(source.subscriptions) });
         }
         save();

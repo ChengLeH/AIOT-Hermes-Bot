@@ -1,6 +1,6 @@
 import { getBotEvents, getBotProfiles } from "./native-bot";
 import { PROFILE_REFRESH_SECONDS } from "./bot-catalog";
-import { applyEventBatch, type EventSink, type TurnMap } from "./events";
+import { applyEventBatch, replayEventSink, finishEventReplay, type EventSink, type TurnMap } from "./events";
 import { useDesk } from "./store";
 import {
   applyProfilePoll,
@@ -24,6 +24,8 @@ import { deepLinkFromPwaSearch } from "./origin";
 let started = false;
 let users = 0;
 let after = 0;
+let replaying = true;
+let replayProgress = false;
 let generation = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
 let looping = false;
@@ -35,6 +37,7 @@ let onOffline: (() => void) | null = null;
 
 export function resetEventCursor(): void {
   after = 0;
+  replaying = true;
   generation += 1;
   seen.clear();
   for (const key of Object.keys(turns)) delete turns[key];
@@ -152,7 +155,7 @@ async function eventLoop(): Promise<void> {
   looping = true;
   while (started) {
     await pollOnce();
-    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((r) => setTimeout(r, replaying && replayProgress ? 0 : 800));
   }
   looping = false;
 }
@@ -161,9 +164,9 @@ function sink(): EventSink {
   const botOf = (profile: string) => useDesk.getState().bots.find((b) => b.profile === profile);
   return {
     upsert: (input) => useDesk.getState().upsertEventMessage(input),
-    setWorking: (profile, _conversation, working) => {
+    setWorking: (profile, conversation, working) => {
       const bot = botOf(profile);
-      if (!bot) return;
+      if (!bot || bot.conversation !== conversation) return;
       useDesk.getState().setBotState(bot.id, working ? "working" : "idle");
     },
     activity: (profile, _conversation, label, kind) => {
@@ -177,6 +180,7 @@ function sink(): EventSink {
 }
 
 async function pollOnce(): Promise<void> {
+  replayProgress = false;
   if (polling) return;
   const { connection } = useDesk.getState();
   const origin = connection.origin;
@@ -211,7 +215,15 @@ async function pollOnce(): Promise<void> {
       });
     }
     const state = { cursor: after, turns, seen };
-    applyEventBatch(page.events, state, sink());
+    replayProgress = page.events.length > 0;
+    const target = sink();
+    applyEventBatch(page.events, state, replaying ? replayEventSink(target) : target);
+    // The API supplies no total/high-water mark. An empty page establishes catch-up,
+    // regardless of the server's page size; never expose historical starts in between.
+    if (replaying && page.events.length === 0) {
+      replaying = false;
+      finishEventReplay(turns, useDesk.getState().bots.filter((bot) => !useDesk.getState().sending[bot.id]), target);
+    }
     after = state.cursor;
   } catch (err) {
     if (isUnauthorizedError(err)) {
