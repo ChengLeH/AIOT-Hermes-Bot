@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
+import ts from 'typescript';
+const source=readFileSync(new URL('../src/lib/push-presence.ts',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace('export function','function');
+const script=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+test('presence follows visibility, clears on cleanup and uses keepalive without prompting permission',async()=>{
+  const calls=[],events={};let interval;
+  const document={visibilityState:'visible',addEventListener:(k,f)=>events[k]=f,removeEventListener:k=>delete events[k]};
+  const window={location:{origin:'https://app.test'},addEventListener:(k,f)=>events[k]=f,removeEventListener:k=>delete events[k],setInterval:f=>(interval=f,1)};
+  const context={document,window,navigator:{serviceWorker:{}},crypto:{randomUUID:()=> 'synthetic-tab'},clearInterval(){},readPushId:()=> 'device-id',hermesFetch:async(url,options)=>{calls.push({url,options});return {status:200};}};
+  runInNewContext(script,context);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  const stop=context.startPushPresence('https://hermes.test','synthetic-key');await flush();
+  assert.equal(JSON.parse(calls[0].options.body).visible,true);
+  document.visibilityState='hidden';events.visibilitychange();await flush();
+  assert.equal(JSON.parse(calls[1].options.body).visible,false);
+  interval();await flush();assert.equal(calls.length,2);
+  document.visibilityState='visible';events.pageshow();await flush();assert.equal(JSON.parse(calls[2].options.body).visible,true);
+  stop();await flush();assert.equal(JSON.parse(calls[3].options.body).visible,false);
+  assert.ok(calls.every(c=>c.options.keepalive));assert.equal(Object.keys(events).length,0);
+});

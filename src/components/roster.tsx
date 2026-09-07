@@ -142,6 +142,7 @@ function BotRow({
   live: boolean;
 }) {
   const { bot, last, state } = row;
+  const unread = useDesk((s) => s.unreadBots[bot.id]);
   const working = state === "working";
   const online = botPresenceOnline({ live, available: bot.available });
   return (
@@ -158,6 +159,7 @@ function BotRow({
               <span className={`subhead-glyph truncate font-medium ${online ? "" : "text-muted"}`}>
                 {bot.name}
               </span>
+              {unread ? <span className="shrink-0 rounded-full border border-[#9aafbf]/35 bg-[#637f94]/20 px-2 py-0.5 text-[11px] leading-4 text-[#b5c8d6] shadow-[0_0_9px_#9aafbf35]">{t(locale, "roster.newMessage")}</span> : null}
               {bot.pinned ? <Pin className="size-3.5 shrink-0 text-accent" strokeWidth={1.9} aria-label={t(locale, "chat.pin")} /> : null}
             </span>
             <span className="shrink-0 text-xs tabular-nums text-subtle">

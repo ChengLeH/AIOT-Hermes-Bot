@@ -223,7 +223,7 @@ function middleware() {
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
       return proxyRequest(req, res, botTargetUrl(base, incoming));
     }
-    if (/^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup)$/.test(incoming.pathname)) {
+    if (/^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup|presence)$/.test(incoming.pathname)) {
       const base = readRuntimeTarget();
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
       if (!samePageOrigin(req)) return json(res, 403, { error: "origin_rejected" });
@@ -238,7 +238,7 @@ function middleware() {
     }
     const origin = exactHttpsOrigin(incoming.searchParams.get("origin") || "");
     const path = incoming.searchParams.get("path") || "";
-    if (!origin || !(path.startsWith("/api/bot/") || /^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup)$/.test(path))) {
+    if (!origin || !(path.startsWith("/api/bot/") || /^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup|presence)$/.test(path))) {
       res.statusCode = 400;
       return res.end("invalid_hermes_target");
     }

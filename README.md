@@ -1,12 +1,12 @@
 # AIOT / Hermes Bot
 
-**v0.1.1 · your agent, in your pocket**
+**v0.1.2 · your agent, in your pocket**
 
 AIOT is a mobile-first PWA frontend for a Hermes Bot running on your own computer. It discovers the profiles exposed by Hermes and presents each profile as a contact. Messages, attachments, Markdown, code blocks, approvals, interrupt controls, search, notifications, and downloadable files stay connected to your local Hermes Bot.
 
 > Platform status: v0.1.1 has been installed and tested on macOS. Windows has not been tested yet.
 
-![AIOT approval UI concept in English](docs/images/approval-en.svg)
+![AIOT v0.1.2 synthetic preview in English](docs/images/v0.1.2-en.svg)
 
 The illustrations below are synthetic UI previews, not live conversations or evidence of backend execution. English and Traditional Chinese examples use their matching UI language.
 
@@ -72,6 +72,8 @@ Double-click **AIOT.app** again to reopen an already running service. Double-cli
 
 ### Approvals and notifications
 
+While AIOT is visible, that device uses in-app unread indicators instead of system notifications. Background devices still receive push. Foreground presence renews every 5 seconds and expires after 15 seconds; an abrupt browser crash or lost connection can delay restoration of background delivery by up to 15 seconds. A push already in transit can race with opening the app, and browser-enforced generic notifications cannot be fully controlled.
+
 Approval choices are supplied by Hermes; AIOT does not invent session or permanent permission. Only requests actually sent by Hermes appear as approval cards. Task planning and scheduled-job cards are not included in v0.1.1. Enable notifications in Settings and accept the browser permission prompt, then send a test notification. Keep AIOT and Hermes running for background delivery; the notification relay also needs internet access to the browser push provider.
 
 Automated CI checks are not a fresh macOS installation test. Windows and iPhone installation have not been validated.
@@ -81,6 +83,8 @@ Automated CI checks are not a fresh macOS installation test. Windows and iPhone 
 ---
 
 ## 繁體中文
+
+![AIOT v0.1.2 繁體中文示範介面](docs/images/v0.1.2-zh.svg)
 
 ![繁體中文批准卡設計預覽](docs/images/approval-zh.svg)
 
@@ -146,6 +150,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 ### 批准與通知
 
+AIOT 在前景時，該裝置改用介面內的新訊息提示，不顯示系統通知；其他背景裝置仍接收推播。前景狀態每 5 秒更新，15 秒後失效；瀏覽器突然關閉或斷線時，背景投遞最多可能延後 15 秒恢復。已在傳送途中的推播可能與開啟 App 同時抵達，瀏覽器強制顯示的一般通知無法完全控制。
+
 批准選項來自 Hermes；AIOT 不會自行加入整個對話或永久批准權限。只有 Hermes 真正送出的要求會顯示批准卡。v0.1.1 不包含任務規劃或排程工作卡。到設定啟用通知並接受瀏覽器權限，再發送測試通知；背景通知需要 AIOT 與 Hermes 持續執行，且 AIOT 能連上瀏覽器的網際網路推播服務。
 
 CI 自動檢查不等於全新 macOS 安裝驗證。Windows 與 iPhone 安裝流程尚未實測。
@@ -163,4 +169,4 @@ CI 自動檢查不等於全新 macOS 安裝驗證。Windows 與 iPhone 安裝流
 
 主機通知服務的 `.aiot/push-private.json` 仍需要可供服務使用的憑證，使用檔案權限 0600 保護，並非加密檔案；請使用主機磁碟加密並限制帳號存取。此目錄不包含在 GitHub 提交中。
 
-See [0.1.1 release notes / 更新內容](CHANGELOG.md).
+See [0.1.2 release notes / 更新內容](CHANGELOG.md).

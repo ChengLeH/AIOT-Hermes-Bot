@@ -1,3 +1,4 @@
+import { startPushPresence } from "@/lib/push-presence";
 import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { MessageSquare, Settings } from "lucide-react";
 import { Onboarding } from "./onboarding";
@@ -29,6 +30,9 @@ import { getBotProfiles } from "@/lib/native-bot";
 import { historyView, pushChatHistory, seedAppHistory } from "@/lib/app-history";
 
 export function DeskApp() {
+  const pushOrigin = useDesk((s) => s.connection.origin);
+  const pushKey = useDesk((s) => s.connection.apiKey);
+  useEffect(() => startPushPresence(pushOrigin, pushKey), [pushOrigin, pushKey]);
   const onboarded = useDesk((s) => s.onboarded);
   const view = useDesk((s) => s.view);
   const setView = useDesk((s) => s.setView);

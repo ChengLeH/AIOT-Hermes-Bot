@@ -48,6 +48,16 @@ import { backToRoster, closeSearchHistory, historySearchOpen, pushSearchHistory 
 
 export function ChatView() {
   const activeBotId = useDesk((s) => s.activeBotId);
+  const currentView = useDesk((s) => s.view);
+  useEffect(() => {
+    const read = () => {
+      const state = useDesk.getState();
+      if (activeBotId && state.view === "chat" && document.visibilityState === "visible") state.markRead(activeBotId);
+    };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }, [activeBotId, currentView]);
   const bots = useDesk((s) => s.bots);
   const messages = useDesk((s) => s.messages);
   const botState = useDesk((s) => s.botState);
@@ -598,7 +608,7 @@ export function ChatView() {
                 className={cn("flex", m.role === "user" ? "justify-end" : "justify-start", m.role === "assistant" && !sentenceBubbles(m.content, m.streaming === true).length && !m.attachments?.length && "hidden")}
               >
                 {m.role === "assistant" ? (
-                  <div className="assistant-bubble sentence-bubble min-w-0 max-w-[92%] rounded-[20px] rounded-bl-sm bg-bg-elevated px-4 py-2.5 text-[0.95rem] leading-relaxed text-fg">
+                  <div className="assistant-bubble sentence-bubble relative min-w-0 max-w-[92%] rounded-[20px] rounded-bl-sm bg-bg-elevated pl-4 pr-10 py-2.5 text-[0.95rem] leading-relaxed text-fg">
                     <Markdown text={sentenceBubbles(m.content, m.streaming === true).join("")} query={searchQuery} locale={locale} />
                     <BubbleCopy text={sentenceBubbles(m.content, m.streaming === true).join("")} locale={locale} />
                     {m.attachments && m.attachments.length > 0 ? (
@@ -614,7 +624,7 @@ export function ChatView() {
                     ) : null}
                   </div>
                 ) : (
-                  <div className="min-w-0 max-w-[78%] rounded-[20px] rounded-br-sm bg-user-bubble px-4 py-2.5 text-[0.95rem] leading-relaxed">
+                  <div className="relative min-w-0 max-w-[78%] rounded-[20px] rounded-br-sm bg-user-bubble pl-4 pr-10 py-2.5 text-[0.95rem] leading-relaxed">
                     {m.content ? <Markdown text={m.content} query={searchQuery} locale={locale} /> : null}
                     {m.attachments && m.attachments.length > 0 ? (
                       <div className={m.content ? "mt-2" : ""}>

@@ -110,3 +110,30 @@ test('actual Hermes turn completion notifies once across legacy events and resta
     assert.equal(sent.length, 3, 'the next turn in the same conversation still notifies');
   } finally {service.close(); rmSync(dataDir, {recursive: true, force: true});}
 });
+
+test('foreground leases suppress only that device, release per tab, and expire safely', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiot-presence-'));
+  const sent = []; let clock = 0;
+  const service = createPushService({ dataDir, now: () => clock, pollMs: 999999,
+    fetchImpl: async url => ({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),
+    send: async s => sent.push(s.endpoint) });
+  const call = async (action, body) => {
+    const req = Readable.from([JSON.stringify(body)]); req.url='/api/pwa/push/'+action;req.method='POST';req.headers={authorization:'Bearer test'};
+    let code,result;await service.handle(req,{writeHead:c=>code=c,end:r=>result=JSON.parse(r)},'http://hermes.test/api/bot');return {code,...result};
+  };
+  try {
+    const a = await call('subscribe',{subscription:sub});
+    const b = await call('subscribe',{subscription:{...sub,endpoint:sub.endpoint+'-second'}});
+    assert.equal((await call('presence',{id:a.id,clientId:'tab-one-123',visible:true})).code,200);
+    await call('test',{id:a.id});await call('test',{id:b.id});assert.deepEqual(sent,[sub.endpoint+'-second']);
+    await call('presence',{id:a.id,clientId:'tab-two-123',visible:true});
+    await call('presence',{id:a.id,clientId:'tab-one-123',visible:false});
+    await call('test',{id:a.id});assert.equal(sent.length,1);
+    await call('presence',{id:a.id,clientId:'tab-two-123',visible:false});
+    await call('test',{id:a.id});assert.equal(sent.length,2);
+    await call('presence',{id:a.id,clientId:'tab-one-123',visible:true});clock=15001;
+    await call('test',{id:a.id});assert.equal(sent.length,3);
+    assert.equal((await call('presence',{id:a.id,clientId:'x',visible:true})).code,400);
+    assert.equal((await call('presence',{id:'unknown',clientId:'tab-one-123',visible:true})).code,404);
+  } finally {service.close();rmSync(dataDir,{recursive:true,force:true});}
+});

@@ -1,3 +1,4 @@
+import { assistantSnapshot } from "./unread";
 import { getBotEvents, getBotProfiles } from "./native-bot";
 import { PROFILE_REFRESH_SECONDS } from "./bot-catalog";
 import { applyEventBatch, replayEventSink, finishEventReplay, type EventSink, type TurnMap } from "./events";
@@ -26,6 +27,7 @@ let users = 0;
 let after = 0;
 let replaying = true;
 let replayProgress = false;
+let replayBaseline: Map<string, string> | null = null;
 let generation = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
 let looping = false;
@@ -38,6 +40,7 @@ let onOffline: (() => void) | null = null;
 export function resetEventCursor(): void {
   after = 0;
   replaying = true;
+  replayBaseline = null;
   generation += 1;
   seen.clear();
   for (const key of Object.keys(turns)) delete turns[key];
@@ -163,7 +166,14 @@ async function eventLoop(): Promise<void> {
 function sink(): EventSink {
   const botOf = (profile: string) => useDesk.getState().bots.find((b) => b.profile === profile);
   return {
-    upsert: (input) => useDesk.getState().upsertEventMessage(input),
+    upsert: (input) => {
+      const bot = botOf(input.profile);
+      const old = bot && useDesk.getState().messages.find((m) => m.botId === bot.id && m.messageId === input.messageId);
+      useDesk.getState().upsertEventMessage(input);
+      if (!replaying && bot && input.role === "assistant" && (input.text || input.attachments?.length) && (!old || old.content !== input.text || old.attachments?.length !== input.attachments?.length)) {
+        useDesk.getState().markUnread(bot.id);
+      }
+    },
     setWorking: (profile, conversation, working) => {
       const bot = botOf(profile);
       if (!bot || bot.conversation !== conversation) return;
@@ -214,6 +224,7 @@ async function pollOnce(): Promise<void> {
         capabilities: current?.capabilities ?? disconnectedCapabilities(),
       });
     }
+    if (replaying && !replayBaseline) replayBaseline = assistantSnapshot(useDesk.getState().messages);
     const state = { cursor: after, turns, seen };
     replayProgress = page.events.length > 0;
     const target = sink();
@@ -222,6 +233,11 @@ async function pollOnce(): Promise<void> {
     // regardless of the server's page size; never expose historical starts in between.
     if (replaying && page.events.length === 0) {
       replaying = false;
+      const latest = assistantSnapshot(useDesk.getState().messages);
+      for (const [id, previous] of replayBaseline ?? []) {
+        if (latest.get(id) !== previous) useDesk.getState().markUnread(id);
+      }
+      replayBaseline = null;
       finishEventReplay(turns, useDesk.getState().bots.filter((bot) => !useDesk.getState().sending[bot.id]), target);
     }
     after = state.cursor;

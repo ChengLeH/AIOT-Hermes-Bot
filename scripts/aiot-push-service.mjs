@@ -15,7 +15,7 @@ export function validPushSubscription(sub) {
 }
 
 /** Local AIOT service; stores credentials only in its private data directory. */
-export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.sendNotification.bind(webpush), pollMs = 3000 } = {}) {
+export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.sendNotification.bind(webpush), pollMs = 3000, now = Date.now } = {}) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = join(dataDir, 'push-private.json');
   let state;
@@ -23,6 +23,7 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
   catch (error) { if (error.code !== 'ENOENT') throw error; state = { vapid: webpush.generateVAPIDKeys(), sources: {} }; }
   const save = () => { const tmp = `${file}.tmp`; writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 }); chmodSync(tmp, 0o600); renameSync(tmp, file); };
   save();
+  const presence = new Map(); // Ephemeral device/tab leases; never persist across restarts.
   let queue = Promise.resolve();
   const serial = (fn) => { const result = queue.then(fn); queue = result.catch(() => {}); return result; };
   const json = (res, code, value) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -31,9 +32,16 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
     if (!response.ok) throw Object.assign(new Error('Hermes connection unavailable'), { status: response.status });
     return response.json();
   };
+  const presenceKey = (source, endpoint) => createHash('sha256').update(source.target + '\n' + source.authorization + '\n' + endpoint).digest('hex');
   async function deliver(source, id, payload) {
     const sub = source.subscriptions[id];
     if (!sub || !validPushSubscription(sub)) return false;
+    const leases = presence.get(presenceKey(source, sub.endpoint));
+    if (leases) {
+      for (const [client, expires] of leases) if (expires <= now()) leases.delete(client);
+      if (leases.size) return true; // Consumed by the foreground event stream, not deferred.
+      presence.delete(presenceKey(source, sub.endpoint));
+    }
     try {
       await send(sub, JSON.stringify(payload), { TTL: 300, timeout: 10000, vapidDetails: { subject: 'https://github.com/ChengLeH/AIOT-Hermes-Bot', ...state.vapid } });
       return true;
@@ -99,7 +107,7 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
   }, pollMs); timer.unref();
   async function handleUnsafe(req, res, target) {
     const action = new URL(req.url, 'http://localhost').pathname.split('/').pop();
-    if (!['status', 'subscribe', 'test', 'unsubscribe', 'lookup'].includes(action)) return json(res, 404, { error: 'Not found' });
+    if (!['status', 'subscribe', 'test', 'unsubscribe', 'lookup', 'presence'].includes(action)) return json(res, 404, { error: 'Not found' });
     if (req.method !== (action === 'status' ? 'GET' : 'POST')) return json(res, 405, { error: 'Method not allowed' });
     const authorization = req.headers.authorization;
     if (typeof authorization !== 'string' || !/^Bearer \S+$/.test(authorization)) return json(res, 401, { error: 'Connection key required' });
@@ -107,8 +115,13 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
     const key = createHash('sha256').update(target + '\n' + authorization).digest('hex');
     try {
       const candidate = { target, authorization };
-      const profiles = await request(candidate, 'profiles');
-      if (!Array.isArray(profiles.profiles)) throw new Error('Invalid Hermes profile response');
+      // Presence can only address an already authenticated source/subscription.
+      // Avoid probing Hermes every heartbeat; enrollment and other operations revalidate.
+      if (action === 'presence' && !state.sources[key]) return json(res, 401, { error: 'Unknown subscription source' });
+      if (action !== 'presence') {
+        const profiles = await request(candidate, 'profiles');
+        if (!Array.isArray(profiles.profiles)) throw new Error('Invalid Hermes profile response');
+      }
       const source = state.sources[key] ||= { ...candidate, subscriptions: {}, cursor: 0, sourceReady: false, failedDeliveries: 0 };
       if (action === 'status') {
         try { const probe = await request(source, `events?after=${source.cursor || 0}`); source.sourceReady = Array.isArray(probe.events); } catch { source.sourceReady = false; }
@@ -125,6 +138,18 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
       }
       if (action === 'lookup') return json(res, 200, { id: Object.entries(source.subscriptions).find(([, sub]) => sub.endpoint === body.endpoint)?.[0] || '' });
       if (!source.subscriptions[body.id]) return json(res, 404, { error: 'Subscription not found' });
+      if (action === 'presence') {
+        if (typeof body.clientId !== 'string' || !/^[a-zA-Z0-9_-]{8,80}$/.test(body.clientId) || typeof body.visible !== 'boolean') return json(res, 400, { error: 'Invalid presence' });
+        const endpoint = presenceKey(source, source.subscriptions[body.id].endpoint);
+        const leases = presence.get(endpoint) || new Map();
+        for (const [client, expires] of leases) if (expires <= now()) leases.delete(client);
+        if (body.visible) {
+          if (!leases.has(body.clientId) && leases.size >= 32) return json(res, 429, { error: 'Too many active tabs' });
+          leases.set(body.clientId, now() + 15000);
+        } else leases.delete(body.clientId);
+        if (leases.size) presence.set(endpoint, leases); else presence.delete(endpoint);
+        return json(res, 200, { ok: true });
+      }
       if (action === 'unsubscribe') { delete source.subscriptions[body.id]; save(); return json(res, 200, { ok: true }); }
       const ok = await deliver(source, body.id, { title: 'aiot', body: 'Notifications are enabled', tag: 'aiot:test' }); save();
       return json(res, ok ? 200 : 502, { ok, ...(!ok ? { error: 'Browser push service could not accept the notification' } : {}) });

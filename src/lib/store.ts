@@ -1,3 +1,4 @@
+import { isReadingBot } from "./unread";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { botFromProfile, botDisplayName, type Bot } from "./bots";
@@ -32,6 +33,9 @@ type DeskState = {
   sessionNotice: string | null;
   locale: Locale | null;
   approvals: ApprovalCard[];
+  unreadBots: Record<string, boolean>;
+  markUnread: (id: string) => void;
+  markRead: (id: string) => void;
   completeOnboarding: () => void;
   resetOnboarding: () => void;
   setView: (view: DeskView) => void;
@@ -95,6 +99,9 @@ export const useDesk = create<DeskState>()(
       sessionNotice: null,
       locale: null,
       approvals: [],
+      unreadBots: {},
+      markUnread: (id) => set((s) => ({ unreadBots: { ...s.unreadBots, [id]: !isReadingBot(id, s.activeBotId, s.view, typeof document !== "undefined" && document.visibilityState === "visible") } })),
+      markRead: (id) => set((s) => s.unreadBots[id] ? { unreadBots: { ...s.unreadBots, [id]: false } } : {}),
       completeOnboarding: () => set({ onboarded: true, view: "roster" }),
       resetOnboarding: () => {
         clearPassword(get().connection.origin);
@@ -106,7 +113,7 @@ export const useDesk = create<DeskState>()(
         });
       },
       setView: (view) => set({ view, sessionNotice: view === "chat" ? null : get().sessionNotice }),
-      openBot: (id) => set({ activeBotId: id, view: "chat", sessionNotice: null }),
+      openBot: (id) => { get().markRead(id); set({ activeBotId: id, view: "chat", sessionNotice: null }); },
       openFromPush: (profile) => {
         const bot = get().bots.find((b) => b.profile === profile);
         if (!bot) return false;
@@ -324,6 +331,7 @@ export const useDesk = create<DeskState>()(
       skipHydration: true,
       partialize: (s) => ({
         onboarded: s.onboarded,
+        unreadBots: s.unreadBots,
         locale: s.locale,
         view: s.view,
         activeBotId: s.activeBotId,

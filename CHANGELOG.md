@@ -1,5 +1,25 @@
 # Changelog / 更新內容
 
+## 0.1.2
+
+### English
+
+- Make message copy icons smaller than the text and place them inside the bottom-right corner, with reserved space to prevent overlap.
+
+- Show a muted blue-gray glowing **New message** badge beside Bots with unread replies; opening their conversation clears it. Preserve unread state across reloads and detect changed replies while catching up on saved history.
+- Suppress system notifications on the device where AIOT is visible, while retaining background notifications on other devices.
+- Includes the previous reply-notification, dynamic command trigger and historical typing fixes.
+- Known limitation: enabled profile-local H3 / Host Bridge skills may be absent from the Hermes Bot completion API. This release does not claim to fix that upstream catalog issue or change Hermes settings.
+
+### 繁體中文
+
+- 複製圖示縮小至比內文字體小，放在氣泡內右下角並預留空間，不再額外占用下方一行。
+
+- 未讀 Bot 名稱旁顯示灰藍色光暈的「新訊息」標籤；進入對話後清除。保留重新開啟前的未讀狀態，並在歷史同步時辨識已儲存回覆的變更。
+- AIOT 在目前裝置前景時抑制系統通知，其他裝置的背景通知仍保留。
+- 包含先前的實際回覆通知、動態指令觸發及歷史事件造成假輸入中的修正。
+- 已知限制：Hermes Bot 補全 API 可能遺漏已啟用的 profile 本地 H3／Host Bridge skills；本版未宣稱修復此上游清單問題，也未修改 Hermes 設定。
+
 ## 0.1.1
 
 ### English

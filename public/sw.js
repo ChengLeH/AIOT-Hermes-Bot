@@ -49,6 +49,39 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+async function deliverPush(data) {
+  // Inspect live window visibility at delivery time; focus alone is insufficient
+  // on Android and includes background tabs on some desktop browsers.
+  let windows = [];
+  try {
+    windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  } catch {
+    // If visibility cannot be determined, retain the background notification.
+  }
+  const visible = windows.filter((client) => {
+    try {
+      return new URL(client.url).origin === self.location.origin && client.visibilityState === "visible";
+    } catch {
+      return false;
+    }
+  });
+  if (visible.length) {
+    for (const client of visible) {
+      try {
+        client.postMessage({ type: "foreground-push", profile: data.profile, sessionId: data.sessionId });
+      } catch {
+        // A closing window must not reject the push handler.
+      }
+    }
+    return;
+  }
+  await self.registration.showNotification(data.title || "aiot", {
+    body: data.body || "",
+    tag: data.tag || undefined,
+    data: { profile: data.profile || "", sessionId: data.sessionId || "" },
+  });
+}
+
 self.addEventListener("push", (event) => {
   let raw = {};
   try {
@@ -61,13 +94,7 @@ self.addEventListener("push", (event) => {
     }
   }
   const data = sanitizeVisiblePush(raw);
-  event.waitUntil(
-    self.registration.showNotification(data.title || "aiot", {
-      body: data.body || "",
-      tag: data.tag || undefined,
-      data: { profile: data.profile || "", sessionId: data.sessionId || "" },
-    }),
-  );
+  event.waitUntil(deliverPush(data));
 });
 
 self.addEventListener("notificationclick", (event) => {
