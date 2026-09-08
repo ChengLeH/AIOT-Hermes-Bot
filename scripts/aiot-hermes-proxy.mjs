@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { createPushService } from "./aiot-push-service.mjs";
 import { createNativeRunsService } from "./aiot-native-runs.mjs";
 import { execFile } from "node:child_process";
@@ -150,14 +152,15 @@ async function proxyRequest(req, res, targetUrl) {
       if (typeof value === "string") headers.set(name, value);
     }
     const body = method === "GET" ? undefined : await requestBody(req);
-    const upstream = await fetch(targetUrl, { method, headers, body, redirect: "manual" });
+    const upstream = await fetch(targetUrl, { method, headers, body, redirect: "manual", signal: AbortSignal.timeout(120000) });
     res.statusCode = upstream.status;
     for (const name of ["content-type", "content-length", "content-disposition", "cache-control", "accept-ranges"]) {
       const value = upstream.headers.get(name);
       if (value) res.setHeader(name, value);
     }
     res.setHeader("x-content-type-options", "nosniff");
-    res.end(Buffer.from(await upstream.arrayBuffer()));
+    if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res);
+    else res.end();
   } catch (error) {
     json(res, 502, { error: error instanceof Error ? error.message : "proxy_failed" });
   }
@@ -265,7 +268,9 @@ function middleware() {
       return res.end("method_not_allowed");
     }
     try {
-      return proxyRequest(req, res, new URL(`${origin}${path}`));
+      const target = new URL(`${origin}${path}`);
+      if (target.origin !== origin || !(target.pathname.startsWith("/api/bot/") || /^\/api\/pwa\/push\/(status|subscribe|test|unsubscribe|lookup|presence)$/.test(target.pathname))) return json(res, 400, { error: "invalid_hermes_target" });
+      return proxyRequest(req, res, target);
     } catch (error) {
       res.statusCode = 502;
       res.setHeader("content-type", "application/json");

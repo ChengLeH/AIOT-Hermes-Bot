@@ -162,3 +162,24 @@ test("a persisted run resumes from durable status without replaying token deltas
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Session reads probe exact conversation despite absent flags and strip private fields", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aiot-session-read-"));
+  mkdirSync(join(root, 'profiles', 'demo'), { recursive: true });
+  writeFileSync(join(root, 'profiles', 'demo', '.env'), 'API_SERVER_KEY=official-secret-key\nAPI_SERVER_PORT=9864\n');
+  const paths = [];
+  const service = createNativeRunsService({ dataDir: join(root, 'state'), hermesHome: root, fetchImpl: async (url) => {
+    paths.push(String(url));
+    if (String(url).endsWith('/profiles')) return Response.json({profiles:[]});
+    if (String(url).endsWith('/v1/capabilities')) return Response.json({features:{}});
+    if (String(url).endsWith('/api/sessions/bot-chat/messages?order=latest&limit=500')) return Response.json({session_id:'continued-chat',data:[{id:5,role:'assistant',content:'Reply',timestamp:1700000000,reasoning:'private'}]});
+    return Response.json({}, {status:404});
+  }});
+  try {
+    const result = await call(service,'GET','/api/bot/native/history?profile=demo&conversation=bot-chat');
+    assert.equal(result.status,200);
+    assert.deepEqual(result.body,{conversation:'bot-chat',messages:[{messageId:'hermes-demo:continued-chat:5',role:'assistant',text:'Reply',createdAt:1700000000000}]});
+    assert.equal((await call(service,'GET','/api/bot/native/history?profile=demo&conversation=missing')).status,404);
+    assert.equal(paths.some(path => path.endsWith('/api/sessions')),false);
+  } finally { service.close(); rmSync(root,{recursive:true,force:true}); }
+});

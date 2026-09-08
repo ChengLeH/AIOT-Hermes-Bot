@@ -31,3 +31,22 @@ test("legacy plaintext state migrates on the next write", () => {
     assert.equal(readFileSync(cipher.file, "utf8").includes("legacy-secret"), false);
   } finally { rmSync(dataDir, { recursive: true, force: true }); }
 });
+
+test("native run snapshots encrypt sensitive fields, migrate and reject tampering", () => {
+ const dataDir = mkdtempSync(join(tmpdir(), "aiot-run-private-"));
+ try {
+  const value = { user: "private-prompt", output: "private-response", tool: "private-tool" };
+  const file = join(dataDir, "native-runs.json");
+  writeFileSync(file, JSON.stringify(value));
+  const cipher = createPrivateStateCipher({ dataDir, fileName: "native-runs.json" });
+  cipher.write(cipher.read(() => null));
+  const raw = readFileSync(file, "utf8");
+  assert.equal(raw.includes("private-prompt"), false);
+  assert.equal(raw.includes("private-response"), false);
+  assert.equal(raw.includes("private-tool"), false);
+  assert.deepEqual(cipher.read(() => null), value);
+  const envelope = JSON.parse(raw); envelope.tag = Buffer.alloc(16).toString("base64url");
+  writeFileSync(file, JSON.stringify(envelope));
+  assert.throws(() => cipher.read(() => null));
+ } finally { rmSync(dataDir, { recursive: true, force: true }); }
+});

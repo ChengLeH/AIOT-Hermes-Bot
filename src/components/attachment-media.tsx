@@ -48,6 +48,7 @@ export function QueuePreview({
           {t(locale, "chat.uploading")}
         </span>
       ) : null}
+      {item.status === "error" && image && <span role="alert" className="absolute inset-x-0 bottom-0 bg-bg/90 px-1 py-1 text-center text-[0.65rem] text-danger">{item.error || t(locale, "error.uploadFail")}</span>}
       <button
         type="button"
         aria-label={t(locale, "chat.remove")}
@@ -94,12 +95,14 @@ function RemoteAttachment({
   apiKey: string;
   locale: Locale;
 }) {
-  const local = sessionImageUrl(item.id) || fetchedImageUrl(item.id);
+  const local = origin && apiKey ? sessionImageUrl(item.id) || fetchedImageUrl(item.id) : undefined;
   const [url, setUrl] = useState(local);
   const [busy, setBusy] = useState(false);
   const image = isImageAttachment(item);
 
   useEffect(() => {
+    setUrl(undefined);
+    if (!origin || !apiKey || !item.id) return;
     const cached = sessionImageUrl(item.id) || fetchedImageUrl(item.id);
     if (cached) {
       setUrl(cached);

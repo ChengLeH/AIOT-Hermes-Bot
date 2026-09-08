@@ -1,7 +1,11 @@
+import { createPrivateStateCipher } from "./aiot-private-state.mjs";
+import { handleJobs } from "./aiot-jobs.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+import { sessionMessages } from "./aiot-session-history.mjs";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -89,15 +93,15 @@ export function createNativeRunsService({
   apiOrigin = process.env.AIOT_HERMES_API_ORIGIN || "",
 } = {}) {
   const root = dataDir || join(process.cwd(), ".aiot");
-  const stateFile = join(root, "native-runs.json");
+  const privateState = createPrivateStateCipher({ dataDir: root, fileName: "native-runs.json" });
   mkdirSync(root, { recursive: true, mode: 0o700 });
   let state = { nextSeq: 1, runs: {}, events: [] };
-  try {
-    const saved = JSON.parse(readFileSync(stateFile, "utf8"));
+  {
+    const saved = privateState.read(() => null);
     if (saved && typeof saved === "object") state = { nextSeq: Number(saved.nextSeq) || 1, runs: saved.runs && typeof saved.runs === "object" ? saved.runs : {}, events: Array.isArray(saved.events) ? saved.events : [] };
-  } catch {
-    // First run, or an incomplete state file from an interrupted atomic write.
   }
+  // Migrate a legacy plaintext snapshot before accepting new work. Never overwrite corrupt ciphertext.
+  privateState.write(state);
   const tasks = new Map();
   const endpoints = new Map();
   const authCache = new Map();
@@ -111,9 +115,7 @@ export function createNativeRunsService({
 
   function save() {
     if (closed) return;
-    const temp = `${stateFile}.tmp`;
-    writeFileSync(temp, JSON.stringify(state), { mode: 0o600 });
-    renameSync(temp, stateFile);
+    privateState.write(state);
   }
 
   function append(profile, conversation, eventId, kind, payload = {}) {
@@ -345,11 +347,35 @@ export function createNativeRunsService({
     if (unauthorized) return json(res, unauthorized, { error: unauthorized === 401 ? "connection_key_required" : "connection_unavailable" });
     const incoming = new URL(req.url || "/", "http://localhost");
     const path = incoming.pathname;
+    if (path === "/api/bot/native/jobs" || path.startsWith("/api/bot/native/jobs/")) {
+      const profile = incoming.searchParams.get("profile") || "";
+      if (!PROFILE_RE.test(profile)) return json(res, 400, { error: "invalid_profile" });
+      try {
+        const result = await handleJobs({ req, incoming, ep: await endpoint(profile), fetchImpl, readBody: bodyJson });
+        return json(res, result.status, result.value);
+      } catch { return json(res, 400, { error: "invalid_request" }); }
+    }
+
 
     if (req.method === "GET" && path === "/api/bot/native/capabilities") {
       const profile = incoming.searchParams.get("profile") || "";
       const ep = await endpoint(profile);
       return ep ? json(res, 200, { available: true, profile, features: ep.capabilities }) : json(res, 404, { available: false, profile, features: {} });
+    }
+
+    if (req.method === "GET" && path === "/api/bot/native/history") {
+      const profile = incoming.searchParams.get("profile") || "";
+      const conversation = incoming.searchParams.get("conversation") || "";
+      if (!PROFILE_RE.test(profile) || !ID_RE.test(conversation)) return json(res, 400, { error: "invalid_request" });
+      const ep = await endpoint(profile);
+      if (!ep) return json(res, 404, { messages: [] });
+      // Probe the real Session endpoint, even when capability metadata lags.
+      // Never select another session or create a replacement on a 404.
+      const response = await fetchImpl(`${ep.base}/api/sessions/${encodeURIComponent(conversation)}/messages?order=latest&limit=500`, { headers: ep.headers, redirect: "error", signal: AbortSignal.timeout(6000) });
+      if (!response.ok) return json(res, response.status, { messages: [] });
+      const value = await response.json();
+      if (!Array.isArray(value?.data)) return json(res, 502, { error: "invalid_session_response" });
+      return json(res, 200, { conversation, messages: sessionMessages(value, profile, value.session_id || conversation) });
     }
 
     if (req.method === "GET" && path === "/api/bot/native/skills") {

@@ -61,8 +61,10 @@ function stateKey(dataDir) {
   return fileKey(dataDir);
 }
 
-export function createPrivateStateCipher({ dataDir }) {
-  const file = join(dataDir, "push-private.json");
+export function createPrivateStateCipher({ dataDir, fileName = "push-private.json" }) {
+  if (!["push-private.json", "native-runs.json"].includes(fileName)) throw new Error("Invalid private state file");
+  const aad = fileName === "push-private.json" ? AAD : Buffer.from("aiot-native-runs-v1", "utf8");
+  const file = join(dataDir, fileName);
   const key = stateKey(dataDir);
   return {
     file,
@@ -80,14 +82,14 @@ export function createPrivateStateCipher({ dataDir }) {
       const ciphertext = Buffer.from(parsed.ciphertext || "", "base64url");
       if (iv.length !== 12 || tag.length !== 16 || ciphertext.length === 0) throw new Error("Invalid encrypted AIOT state");
       const decipher = createDecipheriv("aes-256-gcm", key, iv);
-      decipher.setAAD(AAD);
+      decipher.setAAD(aad);
       decipher.setAuthTag(tag);
       return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8"));
     },
     write(value) {
       const iv = randomBytes(12);
       const cipher = createCipheriv("aes-256-gcm", key, iv);
-      cipher.setAAD(AAD);
+      cipher.setAAD(aad);
       const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
       const envelope = {
         version: 1,

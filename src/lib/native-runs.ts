@@ -132,3 +132,11 @@ export async function postNativeInterrupt(input: {
   });
   return { status: res.status };
 }
+
+export async function getSessionHistory(origin: string, apiKey: string, profile: string, conversation: string): Promise<import("./session-history").SessionMessage[]> {
+  const query = new URLSearchParams({ profile, conversation });
+  const res = await hermesFetch(`${origin}/api/bot/native/history?${query}`, { apiKey, timeoutMs: 6500 });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data.messages) ? data.messages.filter((m: import("./session-history").SessionMessage) => m && typeof m.messageId === "string" && typeof m.text === "string" && ["user", "assistant"].includes(m.role)) : [];
+}

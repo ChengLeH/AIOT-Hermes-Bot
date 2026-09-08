@@ -1,3 +1,4 @@
+import { resetPreviewCaches } from "./attachment-preview";
 import { isReadingBot } from "./unread";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
@@ -65,6 +66,7 @@ type DeskState = {
     messageId: string;
     role: "user" | "assistant";
     text: string;
+    createdAt?: number;
     keepRole?: boolean;
     streaming?: boolean;
     attachments?: AttachmentDescriptor[];
@@ -233,7 +235,7 @@ export const useDesk = create<DeskState>()(
         set((s) => ({
           bots: s.bots.map((b) => (b.id === botId ? { ...b, conversation } : b)),
         })),
-      upsertEventMessage: ({ profile, conversation, messageId, role, text, keepRole, streaming, attachments }) => {
+      upsertEventMessage: ({ profile, conversation, messageId, role, text, createdAt, keepRole, streaming, attachments }) => {
         const bot = get().bots.find((b) => b.profile === profile);
         if (!bot) return;
         void conversation;
@@ -242,7 +244,7 @@ export const useDesk = create<DeskState>()(
           if (existing) {
             return {
               messages: s.messages.map((m) =>
-                m.id === existing.id
+                m.id === existing.id && m.botId === bot.id
                   ? {
                       ...m,
                       content: text,
@@ -276,11 +278,11 @@ export const useDesk = create<DeskState>()(
                 role,
                 content: text,
                 streaming,
-                createdAt: Date.now(),
+                createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) ? createdAt : Date.now(),
                 messageId,
                 attachments: mergeAttachmentMeta(undefined, attachments),
               },
-            ],
+            ].sort((a, b) => a.createdAt - b.createdAt),
           };
         });
       },
@@ -363,3 +365,7 @@ export function lastMessageFor(botId: string, messages: ChatMessage[]): ChatMess
   }
   return undefined;
 }
+
+useDesk.subscribe((next, previous) => {
+  if (next.connection.origin !== previous.connection.origin || next.connection.apiKey !== previous.connection.apiKey) resetPreviewCaches();
+});

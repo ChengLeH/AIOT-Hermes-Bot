@@ -69,7 +69,7 @@ export function eyeHex(swatch: EyeSwatch): string {
   return EYE_SWATCHES.find((item) => item.id === swatch)?.hex ?? BRAND_EYE;
 }
 
-export const LAUNCH_MS = 1350;
+export const LAUNCH_MS = 2350;
 export const LAUNCH_REDUCED_MS = 420;
 
 export function launchDuration(reducedMotion: boolean): number {

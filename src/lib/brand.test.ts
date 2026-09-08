@@ -52,8 +52,8 @@ test("eye colors are deterministic muted swatches", () => {
 });
 
 test("launch overlay dismisses after the hold and is shorter without motion", () => {
-  assert.equal(launchDuration(false) >= 1200, true);
-  assert.equal(launchDuration(false) <= 1500, true);
+  assert.equal(launchDuration(false) >= 2200, true);
+  assert.equal(launchDuration(false) <= 2500, true);
   assert.equal(launchDuration(true) < 600, true);
   assert.equal(launchShouldShow(0, launchDuration(false)), true);
   assert.equal(launchShouldShow(launchDuration(false), launchDuration(false)), false);

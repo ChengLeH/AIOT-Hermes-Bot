@@ -19,13 +19,13 @@ export const ApprovalDock = forwardRef<ApprovalDockHandle, {
   const ghost = useRef<HTMLElement | null>(null);
   const seenTriggers = useRef(new Set<string>());
   const en = locale === "en";
-  const pending = approvals.filter((card) => ["pending", "submitting", "error"].includes(card.status));
+  const pending = approvals.filter((card) => !card.hidden && ["pending", "submitting", "error"].includes(card.status));
   const visible = pending.length > 0;
   const status = en ? "Waiting for approval" : "等待批准";
 
   function open() {
     if (expanded) return;
-    window.history.pushState({ ...window.history.state, aiotView: "chat", aiotApprovalDock: profile }, "");
+    window.history.pushState({ ...window.history.state, aiotView: "chat", aiotScheduleDock: undefined, aiotApprovalDock: profile }, "");
     setExpanded(true);
   }
   function collapse(fromHistory = false) {
@@ -49,7 +49,7 @@ export const ApprovalDock = forwardRef<ApprovalDockHandle, {
     if (trigger && !seenTriggers.current.has(trigger)) {
       seenTriggers.current.add(trigger);
       if (!expanded) {
-        window.history.pushState({ ...window.history.state, aiotView: "chat", aiotApprovalDock: profile }, "");
+        window.history.pushState({ ...window.history.state, aiotView: "chat", aiotScheduleDock: undefined, aiotApprovalDock: profile }, "");
         setExpanded(true);
       }
     }

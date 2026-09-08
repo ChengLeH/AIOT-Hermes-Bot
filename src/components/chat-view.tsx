@@ -1,6 +1,11 @@
+import { createUploadBatch } from "@/lib/upload-batch";
+import { createPortal } from "react-dom";
+import { localizeSystemNotice } from "@/lib/system-notice";
+import { usePullRefresh } from "@/lib/pull-refresh";
+import { ScheduleDock, type ScheduleDockHandle } from "./schedule-dock";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronUp, Paperclip, Pin, Search, SendHorizontal, Square, X } from "lucide-react";
-import { BotAvatar, WorkTicker } from "./bot-avatar";
+import { AiotHead, BotAvatar, WorkTicker } from "./bot-avatar";
 import { MessageAttachments, QueuePreview } from "./attachment-media";
 import { CompletionMenu } from "./completion-menu";
 import { ApprovalCardView } from "./approval-card";
@@ -68,7 +73,9 @@ export function ChatView() {
   const sendingMap = useDesk((s) => s.sending);
   const connection = useDesk((s) => s.connection);
   const locale = resolveLocale(useDesk((s) => s.locale));
+  const pull = usePullRefresh();
   const approvals = useDesk((s) => s.approvals);
+  const scheduleDockRef = useRef<ScheduleDockHandle>(null);
   const approvalDockRef = useRef<ApprovalDockHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
@@ -83,6 +90,8 @@ export function ChatView() {
   const abortRef = useRef<AbortController | null>(null);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const tokenRef = useRef<CompletionToken | null>(null);
+  const [uploadFeedback, setUploadFeedback] = useState<{ id: string; ok: boolean } | null>(null);
+  useEffect(() => { if (!uploadFeedback) return; const timer = window.setTimeout(() => setUploadFeedback(null), 2800); return () => clearTimeout(timer); }, [uploadFeedback]);
   const [chips, setChips] = useState<QueuedAttachment[]>([]);
   const [cursor, setCursor] = useState(0);
   const [suggest, setSuggest] = useState<CompletionItem[]>([]);
@@ -346,6 +355,7 @@ export function ChatView() {
 
   function leaveChat() {
     if (finding) { closeFinding(); return; }
+    if (scheduleDockRef.current?.collapse()) return;
     if (approvalDockRef.current?.collapse()) return;
     backToRoster(() => setView("roster"));
   }
@@ -421,11 +431,18 @@ export function ChatView() {
     const limit = maxAttachmentBytes(caps);
     const room = MAX_ATTACHMENTS - chips.length;
     const picked = [...files].slice(0, Math.max(0, room));
+    const finish = createUploadBatch(picked.length);
+    const batchId = crypto.randomUUID();
+    const report = (ok: boolean) => {
+      const result = finish(ok);
+      if (result) setUploadFeedback({ id: batchId, ok: result === "success" });
+    };
     for (const file of picked) {
       const localId = `${file.name}-${file.size}-${file.lastModified}-${Math.random()}`;
       const kind = fileKindError(file);
       const previewUrl = createPreviewUrl(file, { name: file.name, type: file.type });
       if (kind) {
+        report(false);
         setChips((prev) => [
           ...prev,
           { ...queueFromFile(file, localId, previewUrl), status: "error", error: localizeNotice(locale, kind) },
@@ -433,6 +450,7 @@ export function ChatView() {
         continue;
       }
       if (file.size > limit) {
+        report(false);
         setChips((prev) => [
           ...prev,
           { ...queueFromFile(file, localId, previewUrl), status: "error", error: t(locale, "error.fileTooBig") },
@@ -448,10 +466,12 @@ export function ChatView() {
           profile: bot.profile,
           conversation,
         });
+        report(true);
         setChips((prev) =>
           prev.map((c) => (c.localId === localId ? { ...c, status: "ready", attachment } : c)),
         );
       } catch {
+        report(false);
         setChips((prev) =>
           prev.map((c) => (c.localId === localId ? { ...c, status: "error", error: t(locale, "error.uploadFail") } : c)),
         );
@@ -586,11 +606,12 @@ export function ChatView() {
         </button>
       ) : null}
 
-      <div ref={scroller} onClick={(event) => {
+      <div ref={scroller} {...pull.handlers} onClick={(event) => {
         if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
         if (finding) closeFinding();
-        else approvalDockRef.current?.collapse();
+        else if (!scheduleDockRef.current?.collapse()) approvalDockRef.current?.collapse();
       }} className="chat-transcript min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {pull.distance > 20 && <div role="status" className="text-center text-xs text-subtle py-2">{locale === "en" ? (pull.distance >= 90 ? "Release to refresh" : "Pull to refresh") : (pull.distance >= 90 ? "放開即可重新整理" : "下拉重新整理")}</div>}
         {thread.length === 0 && threadApprovals.length === 0 ? (
           <div className="mx-auto max-w-md pt-8">
             <p className="title-glyph font-display text-2xl font-semibold">
@@ -608,8 +629,8 @@ export function ChatView() {
               >
                 {m.role === "assistant" ? (
                   <div className="assistant-bubble sentence-bubble relative min-w-0 max-w-[92%] rounded-[20px] rounded-bl-sm bg-bg-elevated pl-4 pr-10 py-2.5 text-[0.95rem] leading-relaxed text-fg">
-                    <Markdown text={sentenceBubbles(m.content, m.streaming === true).join("")} query={searchQuery} locale={locale} />
-                    <BubbleCopy text={sentenceBubbles(m.content, m.streaming === true).join("")} locale={locale} />
+                    <Markdown text={localizeSystemNotice(sentenceBubbles(m.content, m.streaming === true).join(""), locale)} query={searchQuery} locale={locale} />
+                    <BubbleCopy text={localizeSystemNotice(sentenceBubbles(m.content, m.streaming === true).join(""), locale)} locale={locale} />
                     {m.attachments && m.attachments.length > 0 ? (
                       <div className="mt-2">
                         <MessageAttachments
@@ -641,7 +662,7 @@ export function ChatView() {
                 )}
               </li>
             ))}
-            {threadApprovals.filter((card) => !["pending", "submitting", "error"].includes(card.status)).map((card) => (
+            {threadApprovals.filter((card) => !card.hidden && !["pending", "submitting", "error"].includes(card.status)).map((card) => (
               <li key={card.requestId}>
                 <ApprovalCardView card={card} locale={locale} swatch={bot.swatch} profile={bot.profile} />
               </li>
@@ -668,6 +689,7 @@ export function ChatView() {
             <WorkTicker swatch={bot.swatch} label={t(locale, "chat.workingBar", { name: bot.name })} className="w-full" />
           </div>
         ) : null}
+        {live && <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} />}
         <ApprovalDock
           key={bot.id}
           ref={approvalDockRef}
@@ -689,6 +711,7 @@ export function ChatView() {
           }}
           className={cn("shrink-0 px-3 pt-2 pb-2", working ? "" : "border-t border-border")}
         >
+          {uploadFeedback && createPortal(<div key={uploadFeedback.id} role="status" className="upload-feedback"><span className={uploadFeedback.ok ? "upload-success-mascot" : "upload-error-mascot"}><AiotHead eye={uploadFeedback.ok ? "#91b69c" : "#bd777c"} className="size-12" /></span><span>{locale === "en" ? (uploadFeedback.ok ? "Upload complete" : "Upload failed") : (uploadFeedback.ok ? "上傳成功" : "上傳失敗")}</span></div>, document.body)}
           {chips.length > 0 ? (
             <ul className="mx-auto mb-2 flex max-w-2xl flex-wrap gap-1.5">
               {chips.map((c) => (

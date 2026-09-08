@@ -1,5 +1,5 @@
 export const APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
-export const APPROVAL_RESOLVED_VISIBLE_MS = 30_000;
+export const APPROVAL_RESOLVED_VISIBLE_MS = 4_280;
 export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 export type ApprovalStatus = "pending" | "submitting" | "approved" | "rejected" | "expired" | "error";
 
@@ -13,6 +13,8 @@ export type ApprovalCard = {
   createdAt: number;
   timeoutSeconds?: number;
   resolvedAt?: number;
+  hidden?: boolean;
+  errorAt?: number;
   status: ApprovalStatus;
   lastChoice?: ApprovalChoice;
   confirmAlways?: boolean;
@@ -148,6 +150,7 @@ export function applyApprovalEvent(
 export function mergeApproval(list: ApprovalCard[], next: ApprovalCard): ApprovalCard[] {
   const safe = sanitizeApproval(next);
   if ((safe.status === "approved" || safe.status === "rejected") && !safe.resolvedAt) safe.resolvedAt = Date.now();
+  if (safe.status === "error" && !safe.errorAt) safe.errorAt = Date.now();
   const idx = list.findIndex((item) => item.requestId === safe.requestId);
   if (idx < 0) return [...list, safe].slice(-100);
   const current = list[idx]!;
@@ -161,6 +164,8 @@ export function mergeApproval(list: ApprovalCard[], next: ApprovalCard): Approva
     createdAt: Math.min(current.createdAt, safe.createdAt),
     timeoutSeconds: current.timeoutSeconds ?? safe.timeoutSeconds,
     resolvedAt: current.resolvedAt ?? safe.resolvedAt,
+    hidden: next.hidden ?? current.hidden,
+    errorAt: current.errorAt ?? safe.errorAt,
     status: mergeApprovalStatus(current.status, safe.status),
     lastChoice: safe.lastChoice ?? current.lastChoice,
     confirmAlways: next.confirmAlways ?? current.confirmAlways,
@@ -180,6 +185,8 @@ export function sanitizeApproval(card: ApprovalCard): ApprovalCard {
     choices: card.choices.filter(isApprovalChoice),
     createdAt: card.createdAt,
     resolvedAt: card.resolvedAt,
+    hidden: card.hidden,
+    errorAt: card.errorAt,
     timeoutSeconds: typeof card.timeoutSeconds === "number" && Number.isFinite(card.timeoutSeconds) && card.timeoutSeconds > 0 ? card.timeoutSeconds : undefined,
     status: staleConflict ? "expired" : card.status,
     lastChoice: card.lastChoice,
@@ -215,4 +222,9 @@ export function approvalDeepLink(origin: string, profile: string, conversation: 
 export function resolvedChoiceFromPayload(payload: Record<string, unknown> | undefined): ApprovalChoice | undefined {
   const value = payload?.choice ?? payload?.outcome;
   return isApprovalChoice(value) ? value : undefined;
+}
+
+export function approvalExpiresInMs(card: ApprovalCard, now = Date.now()): number | null {
+  if (!["pending", "error", "submitting"].includes(card.status) || !card.timeoutSeconds || !Number.isFinite(card.timeoutSeconds)) return null;
+  return Math.max(0, card.createdAt + card.timeoutSeconds * 1000 - now);
 }

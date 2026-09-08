@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyApprovalEvent,
+  approvalExpiresInMs,
   approvalBody,
   approvalDismissDelayMs,
   approvalDeepLink,
@@ -52,8 +53,8 @@ test("409 expires a stale card instead of leaving it waiting", () => {
   assert.equal(statusAfterApprovalHttp(500, "once"), "error");
 });
 
-test("approved and rejected cards dismiss after 30 seconds while expired cards dismiss now", () => {
-  assert.equal(approvalDismissDelayMs({ ...BASE, status: "approved", resolvedAt: 1_000 }, 10_000), 21_000);
+test("approved and rejected cards start fading at 4.28 seconds while expired cards dismiss now", () => {
+  assert.equal(approvalDismissDelayMs({ ...BASE, status: "approved", resolvedAt: 1_000 }, 2_000), 3_280);
   assert.equal(approvalDismissDelayMs({ ...BASE, status: "rejected", resolvedAt: 1_000 }, 31_000), 0);
   assert.equal(approvalDismissDelayMs({ ...BASE, status: "expired" }, 10_000), 0);
   assert.equal(approvalDismissDelayMs({ ...BASE, status: "pending" }, 10_000), null);
@@ -161,4 +162,18 @@ test("stripApprovalSecrets removes bearer and home paths", () => {
   assert.ok(first[0].resolvedAt);
   const replay = mergeApproval(first, { ...card, resolvedAt: first[0].resolvedAt! + 10000 });
   assert.equal(replay[0].resolvedAt, first[0].resolvedAt);
+});
+
+test("pending approvals expire at the supplied deadline without inventing one", () => {
+  assert.equal(approvalExpiresInMs({ ...BASE, createdAt: 1000, timeoutSeconds: 600 }, 601000), 0);
+  assert.equal(approvalExpiresInMs({ ...BASE, createdAt: 1000, timeoutSeconds: 600 }, 1000), 600000);
+  assert.equal(approvalExpiresInMs(BASE), null);
+  assert.equal(approvalExpiresInMs({ ...BASE, status: "approved", timeoutSeconds: 600 }), null);
+});
+
+test("dismissed unresolved approvals stay dismissed during replay", () => {
+ const hidden = mergeApproval([], { ...BASE, status: "error", hidden: true });
+ const replay = mergeApproval(hidden, BASE);
+ assert.equal(replay[0].hidden, true);
+ assert.notEqual(replay[0].status, "approved");
 });

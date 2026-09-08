@@ -4,6 +4,7 @@ import { BotAvatar } from "./bot-avatar";
 import { postBotApproval } from "@/lib/native-bot";
 import {
   approvalDismissDelayMs,
+  approvalExpiresInMs,
   statusAfterApprovalHttp,
   type ApprovalCard as ApprovalModel,
   type ApprovalChoice,
@@ -70,6 +71,24 @@ export function ApprovalCardView({
     }, delay);
     return () => { window.clearTimeout(timer); animation?.cancel(); };
   }, [card, upsertApproval]);
+  useEffect(() => {
+    const expire = () => {
+      const current = useDesk.getState().approvals.find((a) => a.requestId === card.requestId && a.profile === card.profile && a.conversation === card.conversation);
+      if (current && approvalExpiresInMs(current) === 0) upsertApproval({ ...current, status: "expired", confirmAlways: false });
+    };
+    const delay = approvalExpiresInMs(card);
+    if (delay === null) return;
+    const timer = window.setTimeout(expire, Math.min(delay, 2147483647));
+    window.addEventListener("focus", expire);
+    document.addEventListener("visibilitychange", expire);
+    return () => { clearTimeout(timer); window.removeEventListener("focus", expire); document.removeEventListener("visibilitychange", expire); };
+  }, [card, upsertApproval]);
+  useEffect(() => {
+    if (card.status !== "error" || card.hidden) return;
+    if (!card.errorAt) { upsertApproval({ ...card, errorAt: Date.now() }); return; }
+    const timer = window.setTimeout(() => upsertApproval({ ...card, hidden: true }), Math.max(0, card.errorAt + 5000 - Date.now()));
+    return () => clearTimeout(timer);
+  }, [card, upsertApproval]);
   const live = connectionLive(connection);
   const disabled = !live || card.status === "submitting" || card.status === "approved" || card.status === "rejected" || card.status === "expired";
 
@@ -102,9 +121,10 @@ export function ApprovalCardView({
     }
   }
 
+  if (card.hidden) return null;
   if (dismissed) return <span hidden className="approval-dismissed" />;
   return (
-    <article ref={cardRef} data-swatch={swatch} className="approval-card rise-in overflow-hidden rounded-2xl border border-border bg-bg-elevated p-4">
+    <article ref={cardRef} data-swatch={swatch} className={`${card.status === "error" ? "approval-error-leaving " : ""}approval-card rise-in overflow-hidden rounded-2xl border border-border bg-bg-elevated p-4`}>
       <div className="flex items-center gap-3">
         <span className="shrink-0 opacity-55">
           <BotAvatar swatch={swatch} profile={profile} size={36} state="idle" />
@@ -116,6 +136,7 @@ export function ApprovalCardView({
         </div>
         {collapsible ? <button type="button" className="shrink-0 grid size-11 place-items-center rounded-full text-muted hover:bg-white/5" aria-expanded={!collapsed} aria-label={locale === "en" ? (collapsed ? "Expand approval" : "Collapse approval") : (collapsed ? "展開批准卡" : "收合批准卡")} onClick={() => setCollapsed((value) => !value)}>{collapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}</button> : null}
       </div>
+      {(card.status === "error" || card.status === "pending") && <button type="button" className="mt-2 text-xs text-muted underline" onClick={() => upsertApproval({ ...card, hidden: true })}>{locale === "en" ? "Dismiss notice (does not approve)" : "收起提示（不代表批准）"}</button>}
       <div hidden={collapsed}>
       {card.description ? <p className="mt-3 text-sm leading-relaxed text-muted">{card.description}</p> : null}
       <dl className="approval-timing">

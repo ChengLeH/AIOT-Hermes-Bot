@@ -1,3 +1,4 @@
+import { usePullRefresh } from "@/lib/pull-refresh";
 import { useMemo } from "react";
 import { Pin, Search, Settings } from "lucide-react";
 import { BotAvatar } from "./bot-avatar";
@@ -23,6 +24,7 @@ type Row = {
 };
 
 export function Roster({ className = "" }: { className?: string }) {
+  const pull = usePullRefresh();
   const bots = useDesk((s) => s.bots);
   const messages = useDesk((s) => s.messages);
   const botState = useDesk((s) => s.botState);
@@ -63,7 +65,8 @@ export function Roster({ className = "" }: { className?: string }) {
   }, [bots, messages, botState, search]);
 
   return (
-    <section className={`flex h-full min-h-0 flex-col bg-bg ${className}`}>
+    <section {...pull.handlers} className={`flex h-full min-h-0 flex-col bg-bg ${className}`}>
+        {pull.distance > 20 && <div role="status" className="text-center text-xs text-subtle py-2">{locale === "en" ? (pull.distance >= 90 ? "Release to refresh" : "Pull to refresh") : (pull.distance >= 90 ? "放開即可重新整理" : "下拉重新整理")}</div>}
       <header className="flex shrink-0 items-end justify-between gap-3 px-5 pt-5 pb-3">
         <div>
           <BrandMark className="text-xs" />
@@ -167,12 +170,13 @@ function BotRow({
             </span>
           </span>
           {working ? (
-            <span data-swatch={bot.swatch} className="mt-1.5 flex flex-col gap-1.5">
+            <span data-swatch={bot.swatch} className="roster-work-status mt-1.5 flex flex-col gap-1.5">
               <span className="work-track max-w-40" aria-hidden>
                 <i />
               </span>
-              <span className="block truncate text-xs text-muted">
-                {activity || t(locale, "roster.workingNamed", { name: bot.name })}
+              <span className="work-label block text-xs text-muted">
+                <span className="block truncate">{activity || t(locale, "roster.workingNamed", { name: bot.name })}</span>
+                <span aria-hidden className="work-label-glow block truncate">{activity || t(locale, "roster.workingNamed", { name: bot.name })}</span>
               </span>
             </span>
           ) : (

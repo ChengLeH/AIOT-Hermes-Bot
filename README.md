@@ -6,9 +6,17 @@ AIOT is a mobile-first PWA frontend for a Hermes Bot running on your own compute
 
 > Platform status: v0.1.3 has been tested on macOS and Android Chrome/PWA. Windows and iPhone installation have not been tested yet.
 
+**v0.1.3 UI follow-up:** centered batch-upload animations, approval dismissal, Bot avatar scheduling selector and activity glow. [Full bilingual changes](CHANGELOG.md#ui-follow-up--介面追加更新).
+
+**v0.1.3 介面追加更新：**整批上傳中央動畫、批准提示收起、排程 Bot 頭像選單與工作文字光暈。[完整中英文紀錄](CHANGELOG.md)。
+
 ![AIOT synthetic preview in English](docs/images/v0.1.2-en.svg)
 
 The illustrations below are synthetic UI previews, not live conversations or evidence of backend execution. English and Traditional Chinese examples use their matching UI language.
+
+![Upload feedback preview](docs/images/v0.1.3-upload-en.svg)
+
+![上傳結果示意](docs/images/v0.1.3-upload-zh-TW.svg)
 
 ## English
 

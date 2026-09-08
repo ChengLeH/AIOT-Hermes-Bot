@@ -2,12 +2,31 @@
 
 ## 0.1.3
 
+### UI follow-up / 介面追加更新
+
+- Encrypt native-runs.json with AES-256-GCM using the existing Keychain-backed state-key mechanism (private file-key fallback when unavailable). Migrate legacy plaintext immediately when loading; reject corrupt encrypted snapshots instead of silently replacing them.
+- native-runs.json 同步採用 AES-256-GCM 與既有 Keychain 狀態金鑰機制（不可用時使用私有檔案金鑰）；載入時立即遷移舊明文，加密資料損毀時停止讀取而非靜默覆寫。
+
+- Batch upload feedback: one centered animated notice after the final file completes; green expansion for all-success, red squash if any file fails. Remove duplicate avatars on attachment thumbnails.
+- Approval notices can be dismissed without granting permission; dismissed requests do not reappear during replay. Confirmed results fade within about five seconds. Unresolved backend rejection failures are not reported as successful decisions.
+- Scheduled-job cards use real execution state and endpoint probing, with a dynamic Bot avatar picker, future-time validation and duplicate-submit protection. General task-list cards remain unsupported.
+- Restore top-of-list pull-to-refresh, add synchronized white activity-text glow, extend launch display by one second, and localize the known stopped-session notice.
+- Supplement idle Bot history from its canonical Session; harden proxy path validation, stream forwarded responses, and clear attachment caches when connection credentials change.
+- Validation: automated tests and production builds; selected Android approval dismissal checks. Full scheduled execution, upload-animation and gesture end-to-end acceptance is still pending. Document indexing stays with Hermes; no file.attach migration is claimed.
+
+- 整批附件最後一個處理完才顯示一次中央提示：全部成功為綠色膨脹，任一失敗為紅色壓扁；移除縮圖上重複的頭像。
+- 批准提示可收起且不代表授權，事件重播不重新顯示；確認結果後約五秒淡出。後端拒絕送出失敗仍未解決，不會誤報成功。
+- 排程卡讀取真實執行狀態，加入動態 Bot 頭像選單、未來時間防呆及防止重複送出；不宣稱支援一般任務清單卡。
+- 補回頂端下拉更新、工作文字同步白色掃光、啟動畫面延長一秒，以及已停止提示的中文化。
+- 使用同一 Bot 的 Session 補同步；加強轉發路徑檢查、回應串流及切換連線後的附件快取清除。
+- 驗證：自動測試與建置，以及部分 Android 批准卡收起檢查；完整排程執行、上傳動畫及手勢的端到端驗收仍待完成。文件索引交給 Hermes，未實作 file.attach 遷移。
+
 ### English
 
 - Detect Hermes 0.21.x official profile capabilities locally and use official Runs plus SSE for supported text-only Bot turns. Profiles without the new interface continue through the existing Bot transport; attachments remain on the Bot upload path.
 - Load `/` suggestions from the official profile Skills API and merge them with existing Bot completions without duplicates.
 - Map official tool activity, approvals, stop controls, and terminal run state into the existing AIOT working indicator, approval card, interrupt control, transcript, and notification relay. AIOT still does not invent task-list cards when Hermes supplies no structured task state.
-- Resolve approval conflicts consistently: both approve and reject actions dismiss stale 409 cards, while confirmed approved or rejected cards keep the 30-second fade-and-collapse behavior.
+- Resolve approval conflicts consistently: both approve and reject actions dismiss stale 409 cards, while confirmed approved or rejected cards fade away within approximately five seconds after confirmation.
 - Encrypt host-side notification state with AES-256-GCM. macOS stores the state key in Login Keychain; a mode-0600 local key is used only when Keychain is unavailable. Existing v0.1.2 plaintext private state migrates on the next save.
 - Keep the official Hermes `API_SERVER_KEY` inside the local AIOT process. The browser and phone continue using only their configured Bot connection key, and no user host, key, profile, conversation, attachment, log, or `.aiot` runtime file is included in the release.
 
@@ -18,7 +37,7 @@ Validation: frontend tests, Node service tests, type checking, production build,
 - 在本機自動偵測 Hermes 0.21.x 各 profile 的官方能力；支援的純文字 Bot 回合改用官方 Runs 與 SSE，沒有新介面的 profile 仍沿用既有 Bot 傳輸，附件繼續走原本的 Bot 上傳路徑。
 - `/` 動態選單會讀取官方 profile Skills API，並與既有 Bot 補全合併及去除重複項目。
 - 把官方工具活動、批准、停止與回合結束狀態映射到 AIOT 現有的工作中動畫、批准卡、停止鍵、對話與通知轉送。Hermes 沒有提供結構化任務狀態時，AIOT 仍不會虛構任務清單卡。
-- 統一處理批准衝突：接受或拒絕遇到已被處理的 409 舊卡都會移除；真正批准或拒絕成功的卡片維持 30 秒後淡出收合。
+- 統一處理批准衝突：接受或拒絕遇到已被處理的 409 舊卡都會移除；真正批准或拒絕成功的卡片約五秒內淡出。
 - 電腦端通知狀態改用 AES-256-GCM 加密。macOS 把狀態金鑰存入登入鑰匙圈；鑰匙圈不可用時才使用權限為 0600 的本機金鑰。v0.1.2 的舊明文私人狀態會在下一次保存時遷移。
 - Hermes 官方 `API_SERVER_KEY` 只留在 AIOT 本機程序；瀏覽器與手機仍只使用自己設定的 Bot 連線金鑰。發佈內容不包含任何使用者主機、金鑰、profile、對話、附件、日誌或 `.aiot` 執行資料。
 

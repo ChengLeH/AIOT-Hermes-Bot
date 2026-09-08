@@ -21,8 +21,11 @@ import {
 } from "./credential-gate";
 import { isAbortError } from "./hermes-fetch";
 import { deepLinkFromPwaSearch } from "./origin";
-import { getNativeRunEvents } from "./native-runs";
+import { canApplySessionHistory, missingSessionMessages } from "./session-history";
+import { getSessionHistory, getNativeRunEvents } from "./native-runs";
 
+let lastHistorySync = 0;
+let historySyncGeneration: number | null = null;
 let started = false;
 let users = 0;
 let after = 0;
@@ -40,6 +43,7 @@ let onVisible: (() => void) | null = null;
 let onOffline: (() => void) | null = null;
 
 export function resetEventCursor(): void {
+  lastHistorySync = 0;
   after = 0;
   nativeAfter = 0;
   replaying = true;
@@ -247,6 +251,29 @@ async function pollOnce(): Promise<void> {
       }
       replayBaseline = null;
       finishEventReplay(turns, useDesk.getState().bots.filter((bot) => !useDesk.getState().sending[bot.id]), target);
+    }
+    // Session reads repair missed/expired event history after reconnect and
+    // across devices. Keep historical reads out of unread/working indicators.
+    if (!replaying && historySyncGeneration !== gen && Date.now() - lastHistorySync > 10_000) {
+      lastHistorySync = Date.now();
+      historySyncGeneration = gen;
+      // Supplementary history never blocks the 800ms live event loop.
+      void Promise.all(useDesk.getState().bots.filter((bot) => bot.available && bot.nativeCapabilities?.available && !useDesk.getState().sending[bot.id] && useDesk.getState().botState[bot.id] !== "working").map(async (bot) => {
+        const identity = { generation: gen, origin, apiKey, profile: bot.profile, conversation: bot.conversation };
+        try {
+          const rows = await getSessionHistory(origin, apiKey, bot.profile, bot.conversation);
+          const current = useDesk.getState();
+          const currentBot = current.bots.find((item) => item.id === bot.id);
+          if (!currentBot || !canApplySessionHistory(identity, {
+            generation, origin: current.connection.origin, apiKey: current.connection.apiKey,
+            profile: currentBot.profile, conversation: currentBot.conversation, started,
+            working: current.botState[bot.id] === "working", sending: Boolean(current.sending[bot.id]),
+          })) return;
+          for (const row of missingSessionMessages(current.messages.filter((m) => m.botId === bot.id), rows)) {
+            current.upsertEventMessage({ profile: bot.profile, conversation: bot.conversation, ...row });
+          }
+        } catch { /* Session API is supplementary; preserve Bot event history. */ }
+      })).finally(() => { if (historySyncGeneration === gen) historySyncGeneration = null; });
     }
     after = state.cursor;
     nativeAfter = nativeState.cursor;
