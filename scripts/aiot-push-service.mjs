@@ -1,7 +1,7 @@
 import webpush from 'web-push';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { createPrivateStateCipher } from './aiot-private-state.mjs';
 
 export function validPushSubscription(sub) {
   try {
@@ -15,13 +15,11 @@ export function validPushSubscription(sub) {
 }
 
 /** Local AIOT service; stores credentials only in its private data directory. */
-export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.sendNotification.bind(webpush), pollMs = 3000, now = Date.now } = {}) {
+export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.sendNotification.bind(webpush), pollMs = 3000, now = Date.now, nativeEvents } = {}) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const file = join(dataDir, 'push-private.json');
-  let state;
-  try { state = JSON.parse(readFileSync(file, 'utf8')); chmodSync(file, 0o600); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; state = { vapid: webpush.generateVAPIDKeys(), sources: {} }; }
-  const save = () => { const tmp = `${file}.tmp`; writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 }); chmodSync(tmp, 0o600); renameSync(tmp, file); };
+  const stateCipher = createPrivateStateCipher({ dataDir });
+  const state = stateCipher.read(() => ({ vapid: webpush.generateVAPIDKeys(), sources: {} }));
+  const save = () => stateCipher.write(state);
   save();
   const presence = new Map(); // Ephemeral device/tab leases; never persist across restarts.
   let queue = Promise.resolve();
@@ -51,37 +49,51 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
       return false;
     }
   }
-  async function drain(source, notify) {
-    // Drain pages; initial enrollment skips old events without sending historical messages.
+  function processEvent(source, event, notify) {
+    source.pending ||= [];
+    const completion = event.kind === 'complete' || event.kind === 'turn_complete';
+    // Hermes' notify flag controls its native notifier, not the user's AIOT subscription.
+    // Both protocol versions can announce the same turn; persist their shared identity
+    // even during enrollment so a later legacy terminal cannot replay skipped history.
+    const turnId = JSON.stringify([event.profile, event.conversation, event.event_id || `${event.source || 'legacy'}:${event.seq}`]);
+    source.completedTurns ||= [];
+    const duplicate = completion && source.completedTurns.includes(turnId);
+    if (completion && !duplicate) {
+      source.completedTurns.push(turnId);
+      source.completedTurns = source.completedTurns.slice(-2048);
+    }
+    const successful = completion && (!event.payload?.outcome || event.payload.outcome === 'success');
+    if (notify && (event.kind === 'approval_request' || (successful && !duplicate))) {
+      const kind = event.kind === 'approval_request' ? 'approval_request' : 'complete';
+      const payload = { title: 'aiot', body: kind === 'approval_request' ? 'Approval requested' : 'New reply', kind, profile: event.profile, sessionId: event.conversation, tag: `aiot:${kind}:${event.profile}:${event.conversation}:${event.event_id || event.seq}` };
+      source.pending.push({ payload, ids: Object.keys(source.subscriptions) });
+    }
+  }
+  async function drainChannel(source, notify, path, cursorKey, optional = false) {
     for (let page = 0; page < 1000; page++) {
-      const data = await request(source, `events?after=${source.cursor || 0}`);
+      let data;
+      try {
+        data = path === 'native/events' && nativeEvents
+          ? await nativeEvents(source[cursorKey] || 0)
+          : await request(source, `${path}?after=${source[cursorKey] || 0}`);
+      }
+      catch (error) { if (optional && error.status === 404) return; throw error; }
       if (!Array.isArray(data.events)) throw new Error('Invalid Hermes events response');
       for (const event of data.events) {
-        if (!Number.isSafeInteger(event.seq) || event.seq <= (source.cursor || 0)) continue;
-        source.cursor = event.seq;
-        source.pending ||= [];
-        const completion = event.kind === 'complete' || event.kind === 'turn_complete';
-        // Hermes' notify flag controls its native notifier, not the user's AIOT subscription.
-        // Both protocol versions can announce the same turn; persist their shared identity
-        // even during enrollment so a later legacy terminal cannot replay skipped history.
-        const turnId = JSON.stringify([event.profile, event.conversation, event.event_id || `seq:${event.seq}`]);
-        source.completedTurns ||= [];
-        const duplicate = completion && source.completedTurns.includes(turnId);
-        if (completion && !duplicate) {
-          source.completedTurns.push(turnId);
-          source.completedTurns = source.completedTurns.slice(-2048);
-        }
-        const successful = completion && (!event.payload?.outcome || event.payload.outcome === 'success');
-        if (notify && (event.kind === 'approval_request' || (successful && !duplicate))) {
-          const kind = event.kind === 'approval_request' ? 'approval_request' : 'complete';
-          const payload = { title: 'aiot', body: kind === 'approval_request' ? 'Approval requested' : 'New reply', kind, profile: event.profile, sessionId: event.conversation, tag: `aiot:${kind}:${event.profile}:${event.conversation}:${event.event_id || event.seq}` };
-          source.pending.push({ payload, ids: Object.keys(source.subscriptions) });
-        }
+        if (!Number.isSafeInteger(event.seq) || event.seq <= (source[cursorKey] || 0)) continue;
+        source[cursorKey] = event.seq;
+        processEvent(source, event, notify);
         save();
       }
-      if (data.events.length < 100) { source.sourceReady = true; return; }
+      if (data.events.length < 100) return;
     }
     throw new Error('Hermes event backlog is still loading');
+  }
+  async function drain(source, notify) {
+    // Drain both transports; initial enrollment skips old events without notifying.
+    await drainChannel(source, notify, 'events', 'cursor');
+    await drainChannel(source, notify, 'native/events', 'nativeCursor', true);
+    source.sourceReady = true;
   }
   async function flush(source) {
     for (const item of source.pending || []) {

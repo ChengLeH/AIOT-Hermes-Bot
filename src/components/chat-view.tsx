@@ -69,7 +69,6 @@ export function ChatView() {
   const connection = useDesk((s) => s.connection);
   const locale = resolveLocale(useDesk((s) => s.locale));
   const approvals = useDesk((s) => s.approvals);
-  const activity = useDesk((s) => s.activity);
   const approvalDockRef = useRef<ApprovalDockHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
@@ -112,8 +111,8 @@ export function ChatView() {
   const uploading = chips.some((c) => c.status === "uploading");
   const uploadError = chips.some((c) => c.status === "error");
   const readyIds = chips.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!.id);
-  const completionsOn = live && canUseDynamicCompletions(caps) && Boolean(bot?.conversation);
-  const interruptsOn = live && canInterrupt(caps);
+  const completionsOn = live && (canUseDynamicCompletions(caps) || bot?.nativeCapabilities?.skills === true) && Boolean(bot?.conversation);
+  const interruptsOn = live && (canInterrupt(caps) || bot?.nativeCapabilities?.run_stop === true);
   const liveToken = completionsOn && bot ? detectCompletionToken(draft, cursor) : null;
   const threadApprovals = bot
     ? approvals.filter((card) => card.profile === bot.profile && card.conversation === bot.conversation)

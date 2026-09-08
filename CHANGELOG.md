@@ -1,5 +1,29 @@
 # Changelog / 更新內容
 
+## 0.1.3
+
+### English
+
+- Detect Hermes 0.21.x official profile capabilities locally and use official Runs plus SSE for supported text-only Bot turns. Profiles without the new interface continue through the existing Bot transport; attachments remain on the Bot upload path.
+- Load `/` suggestions from the official profile Skills API and merge them with existing Bot completions without duplicates.
+- Map official tool activity, approvals, stop controls, and terminal run state into the existing AIOT working indicator, approval card, interrupt control, transcript, and notification relay. AIOT still does not invent task-list cards when Hermes supplies no structured task state.
+- Resolve approval conflicts consistently: both approve and reject actions dismiss stale 409 cards, while confirmed approved or rejected cards keep the 30-second fade-and-collapse behavior.
+- Encrypt host-side notification state with AES-256-GCM. macOS stores the state key in Login Keychain; a mode-0600 local key is used only when Keychain is unavailable. Existing v0.1.2 plaintext private state migrates on the next save.
+- Keep the official Hermes `API_SERVER_KEY` inside the local AIOT process. The browser and phone continue using only their configured Bot connection key, and no user host, key, profile, conversation, attachment, log, or `.aiot` runtime file is included in the release.
+
+Validation: frontend tests, Node service tests, type checking, production build, secret scan, tracked-file inventory, and the existing macOS/Android AIOT UI flow. Windows and iPhone installation remain unverified.
+
+### 繁體中文
+
+- 在本機自動偵測 Hermes 0.21.x 各 profile 的官方能力；支援的純文字 Bot 回合改用官方 Runs 與 SSE，沒有新介面的 profile 仍沿用既有 Bot 傳輸，附件繼續走原本的 Bot 上傳路徑。
+- `/` 動態選單會讀取官方 profile Skills API，並與既有 Bot 補全合併及去除重複項目。
+- 把官方工具活動、批准、停止與回合結束狀態映射到 AIOT 現有的工作中動畫、批准卡、停止鍵、對話與通知轉送。Hermes 沒有提供結構化任務狀態時，AIOT 仍不會虛構任務清單卡。
+- 統一處理批准衝突：接受或拒絕遇到已被處理的 409 舊卡都會移除；真正批准或拒絕成功的卡片維持 30 秒後淡出收合。
+- 電腦端通知狀態改用 AES-256-GCM 加密。macOS 把狀態金鑰存入登入鑰匙圈；鑰匙圈不可用時才使用權限為 0600 的本機金鑰。v0.1.2 的舊明文私人狀態會在下一次保存時遷移。
+- Hermes 官方 `API_SERVER_KEY` 只留在 AIOT 本機程序；瀏覽器與手機仍只使用自己設定的 Bot 連線金鑰。發佈內容不包含任何使用者主機、金鑰、profile、對話、附件、日誌或 `.aiot` 執行資料。
+
+驗證範圍：前端測試、Node 服務測試、型別檢查、正式建置、機密掃描、追蹤檔案盤點，以及既有 macOS／Android AIOT 介面流程。Windows 與 iPhone 安裝仍未驗證。
+
 ## 0.1.2
 
 ### English

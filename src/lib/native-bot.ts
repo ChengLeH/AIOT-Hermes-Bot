@@ -4,8 +4,10 @@ import { attachmentDownloadUrl, botMessageBody } from "./attachment-preview";
 import { completionBody, parseCompletionItems, type CompletionItem, type CompletionTrigger } from "./completions";
 import { interruptBody } from "./interrupt";
 import { approvalBody, type ApprovalChoice } from "./approvals";
+import { getNativeSkills, getProfileNativeCapabilities, mergeCompletionItems, postNativeApproval, postNativeInterrupt } from "./native-runs";
 
 export type BotWireEvent = {
+  source?: string;
   seq?: number;
   profile?: string;
   conversation?: string;
@@ -23,13 +25,25 @@ export type BotWireEvent = {
     choices?: unknown;
     created_at?: string | number;
     choice?: string;
+    tool?: string;
+    preview?: string;
+    duration?: number;
+    error?: boolean;
+    run_id?: string;
   };
 };
 
 export async function getBotProfiles(origin: string, apiKey: string): Promise<NativeBotCatalog> {
   const res = await hermesFetch(`${origin}/api/bot/profiles`, { apiKey, timeoutMs: CONNECTION_PROBE_TIMEOUT_MS });
   if (!res.ok) throw new Error(`profiles ${res.status}`);
-  return parseBotCatalog(await res.json());
+  const catalog = parseBotCatalog(await res.json());
+  const profiles = await Promise.all(catalog.profiles.map(async (profile) => ({
+    ...profile,
+    nativeCapabilities: profile.available
+      ? await getProfileNativeCapabilities(origin, apiKey, profile.name)
+      : undefined,
+  })));
+  return { ...catalog, profiles };
 }
 
 export { botMessageBody };
@@ -103,15 +117,19 @@ export async function postBotCompletions(input: {
   signal?: AbortSignal;
 }): Promise<CompletionItem[]> {
   const body = completionBody(input);
-  const res = await hermesFetch(`${input.origin}/api/bot/completions`, {
+  const legacyRequest = hermesFetch(`${input.origin}/api/bot/completions`, {
     method: "POST",
     apiKey: input.apiKey,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: input.signal,
   });
-  if (!res.ok) return [];
-  return parseCompletionItems(await res.json().catch(() => ({})));
+  const officialRequest = input.trigger === "/"
+    ? getNativeSkills({ origin: input.origin, apiKey: input.apiKey, profile: input.profile, query: input.query, signal: input.signal })
+    : Promise.resolve([]);
+  const [res, official] = await Promise.all([legacyRequest, officialRequest]);
+  const legacy = res.ok ? parseCompletionItems(await res.json().catch(() => ({}))) : [];
+  return mergeCompletionItems(legacy, official);
 }
 
 export async function postBotApproval(input: {
@@ -122,6 +140,8 @@ export async function postBotApproval(input: {
   conversation: string;
   choice: ApprovalChoice;
 }): Promise<{ status: number }> {
+  const native = await postNativeApproval(input).catch(() => ({ status: 0 }));
+  if (native.status !== 404 && native.status !== 0) return native;
   const res = await hermesFetch(`${input.origin}/api/bot/approvals/${encodeURIComponent(input.requestId)}`, {
     method: "POST",
     apiKey: input.apiKey,
@@ -137,6 +157,8 @@ export async function postBotInterrupt(input: {
   profile: string;
   conversation: string;
 }): Promise<{ status: number }> {
+  const native = await postNativeInterrupt(input).catch(() => ({ status: 0 }));
+  if (native.status !== 404 && native.status !== 0) return native;
   const res = await hermesFetch(`${input.origin}/api/bot/interrupts`, {
     method: "POST",
     apiKey: input.apiKey,

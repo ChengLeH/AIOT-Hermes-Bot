@@ -1,4 +1,5 @@
 export const APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
+export const APPROVAL_RESOLVED_VISIBLE_MS = 30_000;
 export type ApprovalChoice = (typeof APPROVAL_CHOICES)[number];
 export type ApprovalStatus = "pending" | "submitting" | "approved" | "rejected" | "expired" | "error";
 
@@ -87,9 +88,15 @@ export function approvalBody(input: {
 }
 
 export function statusAfterApprovalHttp(status: number, choice: ApprovalChoice): ApprovalStatus {
-  if (status === 409) return "error";
+  if (status === 409) return "expired";
   if (status >= 200 && status < 300) return choice === "deny" ? "rejected" : "approved";
   return "error";
+}
+
+export function approvalDismissDelayMs(card: ApprovalCard, now = Date.now()): number | null {
+  if (card.status === "expired") return 0;
+  if (card.status !== "approved" && card.status !== "rejected") return null;
+  return Math.max(0, (card.resolvedAt ?? now) + APPROVAL_RESOLVED_VISIBLE_MS - now);
 }
 
 export function mergeApprovalStatus(current: ApprovalStatus | undefined, incoming: ApprovalStatus): ApprovalStatus {
@@ -163,6 +170,7 @@ export function mergeApproval(list: ApprovalCard[], next: ApprovalCard): Approva
 }
 
 export function sanitizeApproval(card: ApprovalCard): ApprovalCard {
+  const staleConflict = card.status === "error" && card.errorKind === "conflict";
   return {
     requestId: card.requestId,
     profile: card.profile,
@@ -173,9 +181,9 @@ export function sanitizeApproval(card: ApprovalCard): ApprovalCard {
     createdAt: card.createdAt,
     resolvedAt: card.resolvedAt,
     timeoutSeconds: typeof card.timeoutSeconds === "number" && Number.isFinite(card.timeoutSeconds) && card.timeoutSeconds > 0 ? card.timeoutSeconds : undefined,
-    status: card.status,
+    status: staleConflict ? "expired" : card.status,
     lastChoice: card.lastChoice,
-    errorKind: card.errorKind,
+    errorKind: staleConflict ? undefined : card.errorKind,
   };
 }
 

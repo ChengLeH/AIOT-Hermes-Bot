@@ -1,4 +1,5 @@
 import { eyeSwatchForProfile, type EyeSwatch } from "./brand.ts";
+import type { NativeRunCapabilities } from "./native-runs.ts";
 
 export type BotSwatch = EyeSwatch;
 export type BotState = "idle" | "working" | "waiting" | "done";
@@ -14,6 +15,7 @@ export type Bot = {
   profile: string;
   available: boolean;
   conversation: string;
+  nativeCapabilities?: NativeRunCapabilities;
 };
 
 export const SWATCHES: { id: BotSwatch; label: string }[] = [

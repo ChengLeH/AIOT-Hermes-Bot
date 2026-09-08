@@ -11,7 +11,7 @@ import { boundPasswordOrigin, writePassword, clearPassword, credentialStorageUna
 import { MISSING_BOT_NOTICE, type RestoreResult } from "./session";
 import { applyMissingCredential, MISSING_KEY_NOTICE, persistConnectionSlice } from "./credential-gate";
 import type { Locale } from "./locale";
-import { mergeApproval, sanitizeApproval, sanitizeStoredApprovals, type ApprovalCard } from "./approvals";
+import { mergeApproval, sanitizeApproval, type ApprovalCard } from "./approvals";
 import { sanitizeMessage, mergeAttachmentMeta } from "./history";
 import { sanitizeAttachment } from "./attachment-preview";
 
@@ -194,9 +194,10 @@ export const useDesk = create<DeskState>()(
                 title: p.displayName || (p.available ? prev.title : ""),
                 swatch: colors.get(p.name)!,
                 conversation,
+                nativeCapabilities: p.nativeCapabilities,
               };
             }
-            return { ...botFromProfile(p.name, p.available, conversation, p.displayName), swatch: colors.get(p.name)! };
+            return { ...botFromProfile(p.name, p.available, conversation, p.displayName), swatch: colors.get(p.name)!, nativeCapabilities: p.nativeCapabilities };
           });
           const ids = new Set(next.map((b) => b.id));
           const activeOk = Boolean(s.activeBotId && ids.has(s.activeBotId));

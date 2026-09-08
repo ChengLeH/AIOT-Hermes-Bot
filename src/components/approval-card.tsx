@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { BotAvatar } from "./bot-avatar";
 import { postBotApproval } from "@/lib/native-bot";
 import {
+  approvalDismissDelayMs,
   statusAfterApprovalHttp,
   type ApprovalCard as ApprovalModel,
   type ApprovalChoice,
@@ -42,7 +43,12 @@ export function ApprovalCardView({
   const [dismissed, setDismissed] = useState(false);
   const cardRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (card.status !== "approved" && card.status !== "rejected") return;
+    const delay = approvalDismissDelayMs(card);
+    if (delay === null) return;
+    if (card.status === "expired") {
+      setDismissed(true);
+      return;
+    }
     // Persist the first confirmed resolution so replay/reload does not restart the timer.
     if (!card.resolvedAt) {
       upsertApproval({ ...card, resolvedAt: Date.now() });
@@ -61,9 +67,9 @@ export function ApprovalCardView({
         { opacity: 0, transform: "translateY(6px) scale(.985)", height: "0px", paddingBlock: "0px", borderWidth: "0px", offset: 1 },
       ], { duration: 720, easing: "cubic-bezier(.22,1,.36,1)", fill: "forwards" });
       animation.onfinish = () => setDismissed(true);
-    }, Math.max(0, card.resolvedAt + 30_000 - Date.now()));
+    }, delay);
     return () => { window.clearTimeout(timer); animation?.cancel(); };
-  }, [card.requestId, card.status, card.resolvedAt, upsertApproval]);
+  }, [card, upsertApproval]);
   const live = connectionLive(connection);
   const disabled = !live || card.status === "submitting" || card.status === "approved" || card.status === "rejected" || card.status === "expired";
 
@@ -89,7 +95,7 @@ export function ApprovalCardView({
         status,
         lastChoice: choice,
         confirmAlways: false,
-        errorKind: res.status === 409 ? "conflict" : status === "error" ? "generic" : undefined,
+        errorKind: status === "error" ? "generic" : undefined,
       });
     } catch {
       upsertApproval({ ...card, status: "error", lastChoice: choice, confirmAlways: false, errorKind: "generic" });

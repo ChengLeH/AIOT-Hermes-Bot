@@ -1,8 +1,11 @@
+import type { NativeRunCapabilities } from "./native-runs";
+
 export type NativeBotProfile = {
   name: string;
   available: boolean;
   canonicalSessionId: string;
   displayName?: string;
+  nativeCapabilities?: NativeRunCapabilities;
 };
 
 export type NativeBotCapabilities = {

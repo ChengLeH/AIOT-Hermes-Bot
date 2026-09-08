@@ -4,6 +4,7 @@ import { isTurnBusy, releaseSendLock, trySendLock } from "./composer";
 import { useDesk } from "./store";
 import { connectionLive, isUnauthorizedStatus, MISSING_KEY_NOTICE } from "./credential-gate";
 import { t } from "./locale";
+import { canUseNativeRuns, postNativeRun } from "./native-runs";
 
 export async function sendTask(
   botId: string,
@@ -37,14 +38,18 @@ export async function sendTask(
     state.setSending(botId, true);
     state.setBotState(botId, "waiting");
     try {
-      const ack = await postBotMessage({
-        origin,
-        apiKey,
-        profile,
-        conversation,
-        text: trimmed,
-        attachmentIds: ids,
-      });
+      const native = ids.length === 0 && canUseNativeRuns(bot.nativeCapabilities);
+      const result = native
+        ? await postNativeRun({ origin, apiKey, profile, conversation, text: trimmed })
+        : await postBotMessage({
+            origin,
+            apiKey,
+            profile,
+            conversation,
+            text: trimmed,
+            attachmentIds: ids,
+          });
+      const ack = { accepted: result.accepted, status: result.status };
       if (isUnauthorizedStatus(ack.status)) {
         useDesk.getState().markDisconnected();
         useDesk.getState().setBotState(botId, "idle");

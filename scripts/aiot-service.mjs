@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,7 +51,7 @@ async function start() {
   const child = spawn(process.execPath, [resolve(root, "scripts/aiot-server.mjs"), root, String(port)], {
     cwd: root,
     detached: true,
-    env: { ...process.env, VITE_AUTH_ENABLED: "false" },
+    env: { ...process.env, VITE_AUTH_ENABLED: "false", AIOT_USE_KEYCHAIN: process.platform === "darwin" ? "1" : "0" },
     stdio: ["ignore", fd, fd],
   });
   child.unref();

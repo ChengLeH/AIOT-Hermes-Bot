@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   applyApprovalEvent,
   approvalBody,
+  approvalDismissDelayMs,
   approvalDeepLink,
   genericApprovalNotice,
   mergeApproval,
@@ -40,15 +41,22 @@ test("approval POST body is only profile conversation choice", () => {
   assert.equal("command" in body, false);
 });
 
-test("409 never looks approved", () => {
-  assert.equal(statusAfterApprovalHttp(409, "once"), "error");
-  assert.equal(statusAfterApprovalHttp(409, "always"), "error");
-  assert.equal(statusAfterApprovalHttp(409, "deny"), "error");
+test("409 expires a stale card instead of leaving it waiting", () => {
+  assert.equal(statusAfterApprovalHttp(409, "once"), "expired");
+  assert.equal(statusAfterApprovalHttp(409, "always"), "expired");
+  assert.equal(statusAfterApprovalHttp(409, "deny"), "expired");
   assert.notEqual(statusAfterApprovalHttp(409, "once"), "approved");
   assert.equal(statusAfterApprovalHttp(200, "once"), "approved");
   assert.equal(statusAfterApprovalHttp(202, "session"), "approved");
   assert.equal(statusAfterApprovalHttp(200, "deny"), "rejected");
   assert.equal(statusAfterApprovalHttp(500, "once"), "error");
+});
+
+test("approved and rejected cards dismiss after 30 seconds while expired cards dismiss now", () => {
+  assert.equal(approvalDismissDelayMs({ ...BASE, status: "approved", resolvedAt: 1_000 }, 10_000), 21_000);
+  assert.equal(approvalDismissDelayMs({ ...BASE, status: "rejected", resolvedAt: 1_000 }, 31_000), 0);
+  assert.equal(approvalDismissDelayMs({ ...BASE, status: "expired" }, 10_000), 0);
+  assert.equal(approvalDismissDelayMs({ ...BASE, status: "pending" }, 10_000), null);
 });
 
 test("parse keeps supplied choices and strips secrets from command", () => {
@@ -104,7 +112,7 @@ test("submitting survives a request replay until HTTP or a resolved event", () =
   list = mergeApproval(list, { ...BASE, status: "pending" });
   assert.equal(list[0]?.status, "submitting");
   list = mergeApproval(list, { ...BASE, status: "error", errorKind: "conflict" });
-  assert.equal(list[0]?.status, "error");
+  assert.equal(list[0]?.status, "expired");
   assert.notEqual(list[0]?.status, "approved");
 });
 
@@ -123,6 +131,12 @@ test("sanitize drops credentials private urls and duplicate request ids", () => 
   assert.equal("extra" in stored[0]!, false);
   assert.equal("session_key" in stored[0]!, false);
   assert.equal("apiKey" in stored[0]!, false);
+});
+
+test("stored 409 conflicts do not come back as waiting approvals", () => {
+  const [card] = sanitizeStoredApprovals([{ ...BASE, status: "error", errorKind: "conflict" }]);
+  assert.equal(card?.status, "expired");
+  assert.equal(card?.errorKind, undefined);
 });
 
 test("generic approval notice has no command and deep-links profile plus conversation", () => {

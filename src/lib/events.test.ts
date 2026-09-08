@@ -59,6 +59,30 @@ test("event identity is seq, never event_id alone", () => {
   assert.equal(eventIdentity(a).startsWith("id:"), false);
 });
 
+test("legacy and official run streams may reuse sequence numbers without colliding", () => {
+  const legacy: BotWireEvent = { seq: 1, source: "legacy", kind: "message" };
+  const native: BotWireEvent = { seq: 1, source: "native-runs", kind: "message" };
+  assert.notEqual(eventIdentity(legacy), eventIdentity(native));
+});
+
+test("official tool and subagent progress becomes activity without inventing chat messages", () => {
+  const labels: string[] = [];
+  const upserts: unknown[] = [];
+  const sink: EventSink = {
+    upsert: (value) => upserts.push(value),
+    setWorking: () => {},
+    activity: (_profile, _conversation, label) => labels.push(label),
+    notice: () => {},
+  };
+  const state = { cursor: 0, turns: {} as TurnMap, seen: new Set<string>() };
+  applyEventBatch([
+    { source: "native-runs", seq: 1, profile: "alpha", conversation: "c1", kind: "tool_started", payload: { tool: "terminal", preview: "Checking" } },
+    { source: "native-runs", seq: 2, profile: "alpha", conversation: "c1", kind: "subagent_complete", payload: { text: "Done" } },
+  ], state, sink);
+  assert.deepEqual(labels, ["terminal · Checking", "Done"]);
+  assert.deepEqual(upserts, []);
+});
+
 test("turn_complete then typing false stays idle", () => {
   const { sink, working } = sinkRecorder();
   const state = { cursor: 0, turns: {} as TurnMap, seen: new Set<string>() };

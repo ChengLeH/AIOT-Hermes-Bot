@@ -1,4 +1,5 @@
 import { createPushService } from "./aiot-push-service.mjs";
+import { createNativeRunsService } from "./aiot-native-runs.mjs";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,8 +13,15 @@ const setupTokens = new Map();
 const SETUP_TOKEN_TTL_MS = 2 * 60 * 1000;
 const runtimeFile = resolve(process.cwd(), ".aiot/runtime.json");
 let pushService;
+let nativeRunsService;
 function localPushService() {
-  return pushService ||= createPushService({ dataDir: dirname(runtimeFile) });
+  return pushService ||= createPushService({
+    dataDir: dirname(runtimeFile),
+    nativeEvents: (after) => localNativeRunsService().events(after),
+  });
+}
+function localNativeRunsService() {
+  return nativeRunsService ||= createNativeRunsService({ dataDir: dirname(runtimeFile) });
 }
 
 function samePageOrigin(req) {
@@ -218,6 +226,11 @@ async function localSetup(req, res, incoming) {
 function middleware() {
   return async (req, res, next) => {
     const incoming = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+    if (incoming.pathname === "/api/bot/native" || incoming.pathname.startsWith("/api/bot/native/")) {
+      const base = readRuntimeTarget();
+      if (!base) return json(res, 503, { error: "aiot_not_configured" });
+      return localNativeRunsService().handle(req, res, base);
+    }
     if (incoming.pathname === "/api/bot" || incoming.pathname.startsWith("/api/bot/")) {
       const base = readRuntimeTarget();
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
@@ -266,12 +279,14 @@ export function aiotHermesProxyPlugin() {
     name: "aiot:hermes-proxy",
     configureServer(server) {
       const service = localPushService();
-      server.httpServer?.once("close", () => { service.close(); pushService = undefined; });
+      const native = localNativeRunsService();
+      server.httpServer?.once("close", () => { service.close(); native.close(); pushService = undefined; nativeRunsService = undefined; });
       server.middlewares.use(middleware());
     },
     configurePreviewServer(server) {
       const service = localPushService();
-      server.httpServer?.once("close", () => { service.close(); pushService = undefined; });
+      const native = localNativeRunsService();
+      server.httpServer?.once("close", () => { service.close(); native.close(); pushService = undefined; nativeRunsService = undefined; });
       server.middlewares.use(middleware());
     },
   };

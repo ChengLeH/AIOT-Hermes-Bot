@@ -54,9 +54,10 @@ export function advanceCursor(seq: number | undefined, cursor: number): number {
 }
 
 export function eventIdentity(ev: BotWireEvent): string {
-  if (typeof ev.seq === "number") return `seq:${ev.seq}`;
+  const source = ev.source ? `${ev.source}:` : "";
+  if (typeof ev.seq === "number") return `${source}seq:${ev.seq}`;
   const mid = typeof ev.payload?.message_id === "string" ? ev.payload.message_id : "";
-  return `seqless:${ev.kind ?? ""}:${ev.profile ?? ""}:${ev.conversation ?? ""}:${mid}`;
+  return `${source}seqless:${ev.kind ?? ""}:${ev.profile ?? ""}:${ev.conversation ?? ""}:${mid}`;
 }
 
 export function eventFingerprint(ev: BotWireEvent): string {
@@ -151,6 +152,20 @@ export function applyBotEvent(
       outcome === "failure" ? "activity.failed" : outcome === "cancelled" ? "activity.cancelled" : "activity.done",
       outcome === "success" || !outcome ? "done" : "wait",
     );
+    return { cursor: advanceCursor(ev.seq, cursor), applied: true };
+  }
+
+  if (kind === "tool_started" || kind === "tool_completed" || kind === "tool_failed") {
+    const tool = typeof payload.tool === "string" ? payload.tool : "";
+    const preview = typeof payload.preview === "string" ? payload.preview : "";
+    const label = [tool, preview].filter(Boolean).join(" · ") || "activity.tool";
+    sink.activity(profile, conversation, label, kind === "tool_started" ? "tool" : kind === "tool_completed" ? "done" : "wait");
+    return { cursor: advanceCursor(ev.seq, cursor), applied: true };
+  }
+
+  if (kind === "reasoning_available" || kind === "subagent_start" || kind === "subagent_complete") {
+    const label = typeof payload.text === "string" && payload.text ? payload.text : kind === "subagent_start" ? "activity.started" : "activity.done";
+    sink.activity(profile, conversation, label, kind === "subagent_complete" ? "done" : "think");
     return { cursor: advanceCursor(ev.seq, cursor), applied: true };
   }
 

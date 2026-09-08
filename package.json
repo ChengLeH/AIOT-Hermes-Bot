@@ -1,7 +1,7 @@
 {
   "name": "aiot-hermes-bot",
-  "version": "0.1.2",
-  "description": "AIOT / Hermes Bot \u2014 your agent, in your pocket",
+  "version": "0.1.3",
+  "description": "AIOT / Hermes Bot — your agent, in your pocket",
   "private": true,
   "sideEffects": false,
   "type": "module",

@@ -21,10 +21,12 @@ import {
 } from "./credential-gate";
 import { isAbortError } from "./hermes-fetch";
 import { deepLinkFromPwaSearch } from "./origin";
+import { getNativeRunEvents } from "./native-runs";
 
 let started = false;
 let users = 0;
 let after = 0;
+let nativeAfter = 0;
 let replaying = true;
 let replayProgress = false;
 let replayBaseline: Map<string, string> | null = null;
@@ -39,6 +41,7 @@ let onOffline: (() => void) | null = null;
 
 export function resetEventCursor(): void {
   after = 0;
+  nativeAfter = 0;
   replaying = true;
   replayBaseline = null;
   generation += 1;
@@ -203,7 +206,10 @@ async function pollOnce(): Promise<void> {
   polling = true;
   const gen = generation;
   try {
-    const page = await getBotEvents(origin, apiKey, after);
+    const [page, nativePage] = await Promise.all([
+      getBotEvents(origin, apiKey, after),
+      getNativeRunEvents(origin, apiKey, nativeAfter),
+    ]);
     if (gen !== generation) return;
     if (isUnauthorizedStatus(page.status)) {
       useDesk.getState().markDisconnected();
@@ -226,12 +232,14 @@ async function pollOnce(): Promise<void> {
     }
     if (replaying && !replayBaseline) replayBaseline = assistantSnapshot(useDesk.getState().messages);
     const state = { cursor: after, turns, seen };
-    replayProgress = page.events.length > 0;
+    replayProgress = page.events.length > 0 || nativePage.events.length > 0;
     const target = sink();
     applyEventBatch(page.events, state, replaying ? replayEventSink(target) : target);
+    const nativeState = { cursor: nativeAfter, turns, seen };
+    applyEventBatch(nativePage.events, nativeState, replaying ? replayEventSink(target) : target);
     // The API supplies no total/high-water mark. An empty page establishes catch-up,
     // regardless of the server's page size; never expose historical starts in between.
-    if (replaying && page.events.length === 0) {
+    if (replaying && page.events.length === 0 && nativePage.events.length === 0) {
       replaying = false;
       const latest = assistantSnapshot(useDesk.getState().messages);
       for (const [id, previous] of replayBaseline ?? []) {
@@ -241,6 +249,7 @@ async function pollOnce(): Promise<void> {
       finishEventReplay(turns, useDesk.getState().bots.filter((bot) => !useDesk.getState().sending[bot.id]), target);
     }
     after = state.cursor;
+    nativeAfter = nativeState.cursor;
   } catch (err) {
     if (isUnauthorizedError(err)) {
       useDesk.getState().markDisconnected();

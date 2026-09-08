@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createPushService, validPushSubscription } from './aiot-push-service.mjs';
+import { createPrivateStateCipher } from './aiot-private-state.mjs';
 const sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/mock', keys: { p256dh: 'a'.repeat(87), auth: 'b'.repeat(22) } };
 test('push endpoint validation rejects local, arbitrary and credential URLs', () => {
   assert.equal(validPushSubscription(sub), true);
@@ -16,7 +17,7 @@ test('authenticated enrollment skips history; delivers private events once and p
   let events = [{seq:1, kind:'complete', profile:'demo', conversation:'session', event_id:'old'}];
   const sent = [];
   let failDelivery = false, failEvents = false;
-  const fetchImpl = async (url, options) => failEvents && url.includes('/events') ? {ok:false,status:404} : options.headers.Authorization !== 'Bearer valid' ? {ok:false,status:401} : {ok:true,json:async()=> url.includes('/profiles') ? {profiles:[]} : {events:events.filter(e=>e.seq>Number(new URL(url).searchParams.get('after')))}};
+  const fetchImpl = async (url, options) => failEvents && url.includes('/events') ? {ok:false,status:404} : options.headers.Authorization !== 'Bearer valid' ? {ok:false,status:401} : url.includes('/native/events') ? {ok:false,status:404} : {ok:true,json:async()=> url.includes('/profiles') ? {profiles:[]} : {events:events.filter(e=>e.seq>Number(new URL(url).searchParams.get('after')))}};
   const service = createPushService({dataDir,fetchImpl,send:async(s,p)=>{if(failDelivery) throw new Error("offline"); sent.push(JSON.parse(p));},pollMs:999999});
   const call = async (action, body={}, auth='Bearer valid') => {
     const req=Readable.from([JSON.stringify(body)]); req.url='/api/pwa/push/'+action; req.method=action==='status'?'GET':'POST'; req.headers={authorization:auth};
@@ -30,7 +31,8 @@ test('authenticated enrollment skips history; delivers private events once and p
     assert.equal(statSync(join(dataDir,'push-private.json')).mode&0o777,0o600);
     events.push({seq:2,kind:'typing',payload:{text:'private'}},{seq:3,kind:'complete',profile:'demo',conversation:'session',event_id:'new',payload:{text:'secret answer'}},{seq:4,kind:'approval_request',profile:'demo',conversation:'session',event_id:'approve',payload:{command:'secret command'}});
     await service.tick(); await service.tick(); assert.equal(sent.length,2); assert.ok(!JSON.stringify(sent).includes('secret'));
-    assert.equal(JSON.parse(readFileSync(join(dataDir,'push-private.json'))).sources[Object.keys(JSON.parse(readFileSync(join(dataDir,'push-private.json'))).sources)[0]].cursor,4);
+    const saved = createPrivateStateCipher({ dataDir }).read(() => ({}));
+    assert.equal(saved.sources[Object.keys(saved.sources)[0]].cursor,4);
     failDelivery=true; events.push({seq:5,kind:'complete',profile:'demo',conversation:'session',event_id:'retry'});
     await Promise.all([service.tick(),service.tick()]); assert.equal(sent.length,2);
     failDelivery=false; await service.tick(); await service.tick(); assert.equal(sent.length,3);
@@ -46,7 +48,7 @@ test('restarted service resumes persisted subscriptions without a browser reques
   const sent = [];
   const options = {
     dataDir, pollMs: 10,
-    fetchImpl: async url => ({ ok: true, json: async () => url.includes('/profiles') ? {profiles: []} : {events: events.filter(e => e.seq > Number(new URL(url).searchParams.get('after')))} }),
+    fetchImpl: async url => url.includes('/native/events') ? {ok:false,status:404} : ({ ok: true, json: async () => url.includes('/profiles') ? {profiles: []} : {events: events.filter(e => e.seq > Number(new URL(url).searchParams.get('after')))} }),
     send: async (_sub, payload) => sent.push(JSON.parse(payload)),
   };
   let service = createPushService(options);
@@ -65,6 +67,30 @@ test('restarted service resumes persisted subscriptions without a browser reques
   } finally { service.close(); rmSync(dataDir, {recursive: true, force: true}); }
 });
 
+test('official Runs completion and approval events use the existing notification channel', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiot-push-native-'));
+  const native = [];
+  const sent = [];
+  const service = createPushService({ dataDir, pollMs: 999999,
+    nativeEvents: async after => ({ events: native.filter(event => event.seq > after) }),
+    fetchImpl: async url => {
+      assert.equal(url.includes('/native/events'), false, 'native events are local AIOT state, not a Hermes route');
+      return { ok: true, json: async () => url.includes('/profiles') ? {profiles: []} : {events: []} };
+    },
+    send: async (_sub, payload) => sent.push(JSON.parse(payload)),
+  });
+  try {
+    const req = Readable.from([JSON.stringify({subscription: sub})]);
+    req.url = '/api/pwa/push/subscribe'; req.method = 'POST'; req.headers = {authorization: 'Bearer test'};
+    await service.handle(req, {writeHead: code => assert.equal(code, 200), end() {}}, 'http://hermes.test/api/bot');
+    native.push({source:'native-runs',seq:1,kind:'approval_request',profile:'demo',conversation:'chat',event_id:'run-1',payload:{request_id:'request'}});
+    native.push({source:'native-runs',seq:2,kind:'turn_complete',profile:'demo',conversation:'chat',event_id:'run-1',payload:{outcome:'success'}});
+    await service.tick();
+    assert.deepEqual(sent.map(item => item.kind), ['approval_request', 'complete']);
+    assert.equal(JSON.stringify(sent).includes('req-12345678'), false);
+  } finally { service.close(); rmSync(dataDir, {recursive: true, force: true}); }
+});
+
 test('actual Hermes turn completion notifies once across legacy events and restart', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiot-push-turn-'));
   const events = [];
@@ -72,7 +98,7 @@ test('actual Hermes turn completion notifies once across legacy events and resta
   const append = (kind, event_id, payload = {}) => events.push({seq: events.length + 1, kind, event_id, profile: 'demo', conversation: 'chat', payload});
   const options = {
     dataDir, pollMs: 999999,
-    fetchImpl: async url => ({ok: true, json: async () => url.includes('/profiles') ? {profiles: []} : {events: events.filter(e => e.seq > Number(new URL(url).searchParams.get('after')))}}),
+    fetchImpl: async url => url.includes('/native/events') ? {ok:false,status:404} : ({ok: true, json: async () => url.includes('/profiles') ? {profiles: []} : {events: events.filter(e => e.seq > Number(new URL(url).searchParams.get('after')))}}),
     send: async (_sub, payload) => sent.push(JSON.parse(payload)),
   };
   append('turn_complete', 'historical', {outcome: 'success', notify: false});
@@ -115,7 +141,7 @@ test('foreground leases suppress only that device, release per tab, and expire s
   const dataDir = mkdtempSync(join(tmpdir(), 'aiot-presence-'));
   const sent = []; let clock = 0;
   const service = createPushService({ dataDir, now: () => clock, pollMs: 999999,
-    fetchImpl: async url => ({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),
+    fetchImpl: async url => url.includes('/native/events') ? {ok:false,status:404} : ({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),
     send: async s => sent.push(s.endpoint) });
   const call = async (action, body) => {
     const req = Readable.from([JSON.stringify(body)]); req.url='/api/pwa/push/'+action;req.method='POST';req.headers={authorization:'Bearer test'};
