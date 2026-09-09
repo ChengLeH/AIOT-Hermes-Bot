@@ -1,4 +1,42 @@
-# Changelog / 更新內容
+# Changelog
+
+## 0.2.0
+
+## English
+
+AIOT v0.2.0 brings independent and forked tasks into the same Bot chat interface, using official Hermes Sessions.
+
+- Start an independent task, or fork with up to seven recent Bot messages. Manage only Sessions created by that Bot in AIOT; existing Hermes Sessions are not imported into the task list.
+- Continue task conversations with attachments, real stop controls, selection and deletion synchronized with Hermes.
+- Bring completion and approval notifications back through the parent Bot. Foreground devices use in-app indicators; background devices receive push.
+- Display real Session work plans and approval requests. Approval duration is read from the profile's official configuration when available; no deadline is invented.
+- Include bounded completed-task result excerpts in the next parent Bot request on the native Runs route. This does not create an extra model turn or change Hermes storage. Legacy Bot transports without a context field do not support this feature.
+- Share attachment/send controls, search glow, navigation and refined separators across Bot and Session screens. Session conversations open at the latest message; sending goes to the bottom, while model replies preserve the reading position.
+- Add AES-256-GCM browser history/configuration storage and safe plaintext migration. Unreadable data blocks overwriting instead of silently losing history. Server task, authentication and notification state remains encrypted.
+- Fix stale work/approval state, reconnect cleanup, and retry handling when local storage fails before a reply is sent.
+
+**Setup:** Existing Bot connection setup is unchanged. Task features additionally require official Hermes Dashboard sign-in from the local AIOT setup page. Hermes must already expose the required Bot adapter and official Session interfaces; AIOT does not install or modify Hermes.
+
+Tested platform work targets macOS and Android Chrome/PWA. Windows and iPhone installation remain unverified. Encryption at rest does not protect against malicious code running in the same website or a compromised device.
+
+## 繁體中文
+
+AIOT v0.2.0 把獨立任務與 Fork 任務整合進同一個 Bot 聊天介面，透過 Hermes 官方 Session 執行。
+
+- 可開啟獨立任務，或帶入最近最多七則 Bot 訊息建立 Fork。任務清單只管理該 Bot 從 AIOT 建立的 Session，不混入原本的 Hermes Session。
+- 任務內可繼續提問、附檔、實際停止執行，並把選取刪除同步到 Hermes。
+- 任務完成與批准通知統一由父 Bot 呈現；使用 App 時顯示未讀提示，背景裝置接收系統推播。
+- 顯示真實 Session 工作計畫及批准請求；可取得時讀取 profile 官方設定的批准期限，不自行假設秒數或截止時間。
+- 原生 Runs 路徑會在下次向父 Bot 提問時帶入有限長度的已完成任務結果摘錄，不額外呼叫模型，也不改 Hermes 資料庫。沒有上下文欄位的舊 Bot 路徑不支援這項功能。
+- Bot 與 Session 共用附件／傳送按鈕、搜尋光暈及分隔線風格。進入任務預設到最新訊息；送出後到底部，模型回覆不拉走閱讀位置。
+- 瀏覽器歷史與設定加入 AES-256-GCM 加密及安全明文遷移；資料無法解密時阻止覆寫，避免對話遺失。主機端任務、登入及推播資料維持加密。
+- 修正過期工作／批准狀態、重連清理，以及訊息尚未送出前儲存失敗的重試處理。
+
+**設定方式：** Bot 原有網址與金鑰設定不變。任務功能另外在本機 AIOT 設定頁完成 Hermes 官方 Dashboard 登入。Hermes 須已提供必要的 Bot 轉接與官方 Session 介面；AIOT 不安裝或修改 Hermes。
+
+目前平台驗證以 macOS 與 Android Chrome／PWA 為主；Windows 與 iPhone 安裝尚未驗證。靜態加密不能抵擋同站惡意程式碼或已遭入侵的裝置。
+
+
 
 ## 0.1.4
 

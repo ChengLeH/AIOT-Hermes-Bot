@@ -1,3 +1,4 @@
+import { requestTaskDeepLink } from "@/lib/task-deep-link";
 import { startPushPresence } from "@/lib/push-presence";
 import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { MessageSquare, Settings } from "lucide-react";
@@ -12,12 +13,11 @@ import { registerHermesServiceWorker } from "@/lib/api-helper";
 import { startHermesRuntime, resetEventCursor } from "@/lib/runtime";
 import { bindVisualViewport, setAppLayout, appLayoutFromState } from "@/lib/viewport";
 import {
-  browserStorage,
   captureDeskSession,
-  readDeskSession,
+  readBrowserDeskSession,
   restoreAfterProfiles,
   sessionWritesEnabled,
-  writeDeskSession,
+  writeBrowserDeskSession,
 } from "@/lib/session";
 import { MISSING_KEY_NOTICE, sanitizeHydratedConnection } from "@/lib/credential-gate";
 import { APP_BRAND, detectLocale, htmlLang, resolveLocale, t } from "@/lib/locale";
@@ -30,15 +30,18 @@ import { getBotProfiles } from "@/lib/native-bot";
 import { historyView, pushChatHistory, seedAppHistory } from "@/lib/app-history";
 
 export function DeskApp() {
+  const [hydrated, setHydrated] = useState(false);
   const pushOrigin = useDesk((s) => s.connection.origin);
   const pushKey = useDesk((s) => s.connection.apiKey);
-  useEffect(() => startPushPresence(pushOrigin, pushKey), [pushOrigin, pushKey]);
+  useEffect(() => {
+    if (!hydrated) return;
+    return startPushPresence(pushOrigin, pushKey);
+  }, [hydrated, pushOrigin, pushKey]);
   const onboarded = useDesk((s) => s.onboarded);
   const view = useDesk((s) => s.view);
   const setView = useDesk((s) => s.setView);
   const bots = useDesk((s) => s.bots);
   const locale = resolveLocale(useDesk((s) => s.locale));
-  const [hydrated, setHydrated] = useState(false);
   const [launch, setLaunch] = useState(true);
   const dismissLaunch = useCallback(() => setLaunch(false), []);
 
@@ -82,8 +85,7 @@ export function DeskApp() {
         messages: sanitizeStoredMessages(s.messages),
         approvals: sanitizeStoredApprovals(s.approvals),
       }));
-      const storage = browserStorage();
-      const stored = storage && origin ? readDeskSession(origin, storage) : null;
+      const stored = origin ? await readBrowserDeskSession(origin) : null;
       const query = deepLinkFromPwaSearch(typeof window !== "undefined" ? window.location.search : "");
       if (stored || query.profile) {
         useDesk.getState().restoreDesk(
@@ -133,7 +135,12 @@ export function DeskApp() {
     if (!hydrated || !onboarded) return;
     seedAppHistory(view);
     const onPopState = (event: PopStateEvent) => {
-      const target = historyView(event.state);
+      let target = historyView(event.state);
+      // Repair parent entries left by older builds before roster tabs synced history.
+      if (target === "settings" && useDesk.getState().view === "chat") {
+        seedAppHistory("roster");
+        target = "roster";
+      }
       if (target === "chat" && useDesk.getState().activeBotId) setView("chat");
       else if (target === "settings") setView("settings");
       else setView("roster");
@@ -153,10 +160,9 @@ export function DeskApp() {
       if (!sessionWritesEnabled()) return;
       if (!s.connection.apiKey.trim()) return;
       if (s.sessionNotice === MISSING_KEY_NOTICE) return;
-      const storage = browserStorage();
-      if (!storage || !s.connection.origin) return;
+      if (!s.connection.origin) return;
       const bot = s.bots.find((b) => b.id === s.activeBotId);
-      writeDeskSession(
+      void writeBrowserDeskSession(
         captureDeskSession({
           origin: s.connection.origin,
           view: s.view,
@@ -171,8 +177,9 @@ export function DeskApp() {
               .filter((entry) => entry[1]),
           ),
         }),
-        storage,
-      );
+      ).catch(() => {
+        // Fail closed: the in-memory desk keeps working without a plaintext fallback.
+      });
     });
   }, [hydrated, onboarded]);
 
@@ -183,18 +190,21 @@ export function DeskApp() {
 
   useEffect(() => {
     if (!hydrated || !onboarded) return;
-    const apply = (profile: string, session?: string) => {
-      if (!profile) return;
+    const apply = (profile: string, session?: string, taskId?: unknown) => {
+      if (!profile) return false;
       const ok = useDesk.getState().openFromPush(profile, session);
-      if (ok && session) resetEventCursor();
+      if (ok && session) { resetEventCursor(); requestTaskDeepLink(profile, session, taskId); }
+      return ok;
     };
     const params = deepLinkFromPwaSearch(window.location.search);
-    apply(params.profile ?? "", params.session ?? undefined);
+    const taskId = new URLSearchParams(window.location.search).get("task");
+    const opened = apply(params.profile ?? "", params.session ?? undefined, taskId);
+    if (taskId && opened) { const url = new URL(window.location.href); url.searchParams.delete("task"); window.history.replaceState(window.history.state, "", url); }
     stripPwaLocationSecrets();
     const onMsg = (event: MessageEvent) => {
-      const data = event.data as { type?: string; profile?: string; sessionId?: string };
+      const data = event.data as { type?: string; profile?: string; sessionId?: string; taskId?: string };
       if (data?.type !== "open-session") return;
-      apply(data.profile ?? "", data.sessionId);
+      apply(data.profile ?? "", data.sessionId, data.taskId);
     };
     navigator.serviceWorker?.addEventListener("message", onMsg);
     return () => navigator.serviceWorker?.removeEventListener("message", onMsg);
@@ -209,7 +219,7 @@ export function DeskApp() {
     main = <Onboarding />;
   } else {
     main = (
-      <div className="app-shell viewport-root mx-auto flex max-w-6xl flex-col overflow-hidden">
+      <div className="app-shell viewport-root flex w-full min-w-0 flex-col overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           <Roster
             className={

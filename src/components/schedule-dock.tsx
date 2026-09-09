@@ -127,7 +127,7 @@ export const ScheduleDock = forwardRef<
                 { transform: `translate(${mx}px,${my}px) scale(.94,1.08)`, offset: 0.89 },
                 { transform: `translate(${mx}px,${my}px) scale(1)` },
               ],
-              { duration: 620, easing: "ease-in" },
+              { duration: 320, easing: "ease-in" },
             )
             .finished.then(
               () => {
@@ -148,7 +148,7 @@ export const ScheduleDock = forwardRef<
                 { transform: "translateY(-9px) scaleY(1.7)", offset: 0.7 },
                 { transform: "translateY(0)" },
               ],
-              { duration: 620 },
+              { duration: 320 },
             );
         }
         const animation = ghost.animate(
@@ -166,7 +166,7 @@ export const ScheduleDock = forwardRef<
             { transform: `translate(${x}px,${y}px) scale(${sx},${sy * 1.08})`, offset: 0.9 },
             { transform: `translate(${x}px,${y}px) scale(${sx},${sy})`, opacity: 0 },
           ],
-          { duration: 620, easing: "cubic-bezier(.45,0,.8,1)" },
+          { duration: 320, easing: "cubic-bezier(.45,0,.8,1)" },
         );
         const done = () => {
           ghost.remove();

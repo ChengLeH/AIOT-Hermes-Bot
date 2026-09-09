@@ -98,10 +98,12 @@ export function Roster({ className = "" }: { className?: string }) {
         <label className="flex h-11 items-center gap-2 rounded-xl bg-bg-elevated px-3">
           <Search className="size-4 text-subtle" strokeWidth={1.8} />
           <input
+            type="search"
+            autoComplete="off"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t(locale, "roster.search")}
-            className="h-11 w-full bg-transparent text-sm text-fg outline-none placeholder:text-subtle"
+            className="aiot-search-input h-11 w-full bg-transparent text-sm text-fg outline-none placeholder:text-subtle"
           />
         </label>
       </div>

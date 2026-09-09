@@ -17,7 +17,7 @@ function currentState(): AppHistoryState {
 export function seedAppHistory(view: AppHistoryView): void {
   if (typeof window === "undefined") return;
   const state = currentState();
-  if (state[VIEW_KEY]) return;
+  if (state[VIEW_KEY] === view) return;
   if (view === "chat") {
     window.history.replaceState({ ...state, [VIEW_KEY]: "roster" }, "");
     window.history.pushState({ ...state, [VIEW_KEY]: "chat" }, "");
@@ -30,6 +30,8 @@ export function pushChatHistory(): void {
   if (typeof window === "undefined") return;
   const state = currentState();
   if (state[VIEW_KEY] === "chat" && !state[OVERLAY_KEY]) return;
+  // A Bot conversation always belongs to the roster, even after opening settings.
+  window.history.replaceState({ ...state, [VIEW_KEY]: "roster", [OVERLAY_KEY]: undefined }, "");
   window.history.pushState({ ...state, [VIEW_KEY]: "chat", [OVERLAY_KEY]: undefined }, "");
 }
 

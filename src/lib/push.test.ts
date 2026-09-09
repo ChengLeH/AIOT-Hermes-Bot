@@ -63,3 +63,12 @@ test("service worker defaults to aiot and sanitizes approval payloads", () => {
   assert.match(sw, /searchParams.set\("profile"/);
   assert.match(sw, /searchParams.set\("session"/);
 });
+
+test("task notifications retain only a valid task id and localized generic text", () => {
+  const taskId = "2aaace91-a893-4ffd-b652-1c445c4ded45";
+  const card = sanitizeVisiblePush({ kind: "approval_request", taskId, locale: "zh-Hant", body: "secret command" });
+  assert.equal(card.taskId, taskId);
+  assert.equal(card.body, "需要你批准");
+  assert.equal(sanitizeVisiblePush({kind:"complete",locale:"zh-Hant",body:"secret"}).body,"有新的回覆");
+  assert.equal(sanitizeVisiblePush({kind:"approval_request",taskId:"../../secret"}).taskId,undefined);
+});

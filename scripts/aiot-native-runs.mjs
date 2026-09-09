@@ -1,7 +1,7 @@
 import { createPrivateStateCipher } from "./aiot-private-state.mjs";
 import { handleJobs } from "./aiot-jobs.mjs";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -92,6 +92,7 @@ export function createNativeRunsService({
   hermesHome = process.env.HERMES_HOME || join(homedir(), ".hermes"),
   fetchImpl = fetch,
   apiOrigin = process.env.AIOT_HERMES_API_ORIGIN || "",
+  loadTaskResultContext = async () => [],
 } = {}) {
   const root = dataDir || join(process.cwd(), ".aiot");
   const privateState = createPrivateStateCipher({ dataDir: root, fileName: "native-runs.json" });
@@ -100,6 +101,13 @@ export function createNativeRunsService({
   {
     const saved = privateState.read(() => null);
     if (saved && typeof saved === "object") state = { nextSeq: Number(saved.nextSeq) || 1, runs: saved.runs && typeof saved.runs === "object" ? saved.runs : {}, events: Array.isArray(saved.events) ? saved.events : [] };
+  }
+  // Old snapshots did not date chat events. Recover their source run time,
+  // never the time the proxy restarts or the browser replays them.
+  for (const event of state.events) {
+    if (event.payload?.created_at == null && Number.isFinite(state.runs[event.event_id]?.createdAt)) {
+      event.payload = { ...event.payload, created_at: state.runs[event.event_id].createdAt };
+    }
   }
   // Migrate a legacy plaintext snapshot before accepting new work. Never overwrite corrupt ciphertext.
   privateState.write(state);
@@ -120,7 +128,7 @@ export function createNativeRunsService({
   }
 
   function append(profile, conversation, eventId, kind, payload = {}) {
-    const event = { source: "native-runs", seq: state.nextSeq++, profile, conversation, event_id: eventId, kind, payload };
+    const event = { source: "native-runs", seq: state.nextSeq++, profile, conversation, event_id: eventId, kind, payload: { created_at: Date.now(), ...payload } };
     state.events.push(event);
     state.events = state.events.slice(-10_000);
     save();
@@ -399,6 +407,10 @@ export function createNativeRunsService({
       let conversationHistory;
       try { conversationHistory = await loadRunContext(fetchImpl, ep, conversation); }
       catch (error) { return json(res, 409, { error: error.message === "context_too_large" ? "context_too_large" : "context_unavailable" }); }
+      try {
+        const references = await loadTaskResultContext(botTarget, req.headers.authorization, profile, conversation);
+        if (Array.isArray(references)) conversationHistory.push(...references.filter(message => message?.role === "assistant" && typeof message.content === "string"));
+      } catch { /* Task result memory is optional and server-only; omit private callback failures. */ }
       const idempotency = randomUUID();
       const headers = { ...ep.headers, "Content-Type": "application/json", "Idempotency-Key": idempotency, "X-Hermes-Session-Key": `aiot:${profile}:${conversation}` };
       const response = await fetchImpl(`${ep.base}/v1/runs`, { method: "POST", headers, body: JSON.stringify({ input: text, session_id: conversation, conversation_history: conversationHistory }), redirect: "error" });

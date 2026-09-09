@@ -159,19 +159,21 @@ function inline(src: string, query = ""): ReactNode[] {
   });
 }
 
-function CodeBlock({
+export function CodeBlock({
   text,
   lang,
   query = "",
   locale,
+  label: heading,
 }: {
   text: string;
   lang: string;
   query?: string;
   locale?: Locale | null;
+  label?: string;
 }) {
   const [copied, setCopied] = useState(false);
-  const label = lang || t(locale, "chat.code");
+  const label = heading || lang || t(locale, "chat.code");
 
   async function copy() {
     try {

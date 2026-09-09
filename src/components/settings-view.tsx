@@ -5,10 +5,9 @@ import { friendlyConnectError, normalizeHttpsOrigin } from "@/lib/origin";
 import { useDesk } from "@/lib/store";
 import { resetEventCursor } from "@/lib/runtime";
 import {
-  browserStorage,
   enableSessionWrites,
   markRestorePending,
-  readDeskSession,
+  readBrowserDeskSession,
   restoreAfterProfiles,
 } from "@/lib/session";
 import { isUnauthorizedError, MISSING_KEY_NOTICE } from "@/lib/credential-gate";
@@ -62,8 +61,7 @@ export function SettingsView() {
       resetEventCursor();
       useDesk.setState({ messages: [] });
       markRestorePending();
-      const storage = browserStorage();
-      const stored = storage ? readDeskSession(origin, storage) : null;
+      const stored = await readBrowserDeskSession(origin);
       enableSessionWrites();
       restoreDesk(restoreAfterProfiles({ profiles: catalog.profiles, stored }));
       setNotice(countLabel(locale, catalog.profiles.length, "settings.connectedOne", "settings.connected"));

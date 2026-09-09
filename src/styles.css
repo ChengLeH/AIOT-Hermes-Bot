@@ -265,6 +265,10 @@
 }
 
 .launch-screen {
+  --launch-height: 100svh;
+  --launch-unit: 1svh;
+  --launch-safe-top: env(safe-area-inset-top, 0px);
+  --launch-safe-bottom: env(safe-area-inset-bottom, 0px);
   position: fixed;
   inset: 0;
   z-index: 80;
@@ -273,13 +277,13 @@
   justify-content: center;
   box-sizing: border-box;
   width: 100%;
-  height: 100dvh;
-  min-height: 100dvh;
-  max-height: 100dvh;
+  height: var(--launch-height);
+  min-height: var(--launch-height);
+  max-height: var(--launch-height);
   padding:
-    env(safe-area-inset-top, 0px)
+    var(--launch-safe-top)
     env(safe-area-inset-right, 0px)
-    env(safe-area-inset-bottom, 0px)
+    var(--launch-safe-bottom)
     env(safe-area-inset-left, 0px);
   background: #000;
   pointer-events: none;
@@ -293,9 +297,9 @@
   align-items: center;
   height: auto;
   max-height: none;
-  gap: clamp(0.5rem, 2.8vh, 1.25rem);
+  gap: clamp(0.5rem, calc(2.8 * var(--launch-unit)), 1.25rem);
   overflow: visible;
-  --launch-space: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  --launch-space: calc(var(--launch-height) - var(--launch-safe-top) - var(--launch-safe-bottom));
   --launch-scale: min(1, calc(var(--launch-space) / 22rem));
   transform: scale(var(--launch-scale));
   transform-origin: center center;
@@ -303,8 +307,8 @@
 
 .launch-mark {
   display: block;
-  width: clamp(3.25rem, 14vh, 6rem);
-  height: clamp(3.25rem, 14vh, 6rem);
+  width: clamp(3.25rem, calc(14 * var(--launch-unit)), 6rem);
+  height: clamp(3.25rem, calc(14 * var(--launch-unit)), 6rem);
   overflow: visible;
 }
 
@@ -322,7 +326,7 @@
   max-height: none;
   padding-block: 0.12em 0.32em;
   font-family: var(--font-display), "Noto Sans TC", system-ui, sans-serif;
-  font-size: clamp(0.75rem, 2.2vh, 0.875rem);
+  font-size: clamp(0.75rem, calc(2.2 * var(--launch-unit)), 0.875rem);
   font-weight: 400;
   letter-spacing: 0.025em;
   line-height: 1.55;
@@ -769,7 +773,10 @@ li:has(> .approval-dismissed) { display: none; }
 @media (prefers-reduced-motion: reduce) { .upload-error-mascot { animation: none; transform: scale(1.18,.48); } }
 
 .upload-success-mascot { display:inline-flex; margin:3px 12px; animation: upload-success .7s ease-out both; }
-@keyframes upload-success { 0% { transform:scale(.85); } 50% { transform:scale(1.22); filter:drop-shadow(0 0 5px #91b69c66); } 75% { transform:scale(.96); } 100% { transform:scale(1); } }
+@keyframes upload-success { 0% { transform:scale(.85); } 60% { transform:scale(1.32); filter:drop-shadow(0 0 5px #91b69c66); } 80% { transform:scale(1.16); } 100% { transform:scale(1.22); } }
+.upload-success-mascot svg > rect { animation:upload-success-round 1.1s ease-out both; }
+@keyframes upload-success-round { 0% { rx:13.5px; ry:13.5px; } 60%,100% { rx:23.5px; ry:23.5px; stroke:#91b69c; } }
+@media (prefers-reduced-motion:reduce) { .upload-success-mascot svg > rect { animation:none; rx:23.5px; ry:23.5px; stroke:#91b69c; } }
 .approval-error-leaving { animation: approval-error-fade .7s 4.3s ease-in-out forwards; }
 @keyframes approval-error-fade { to { opacity:0; transform:translateY(6px) scale(.985); } }
 @media (prefers-reduced-motion:reduce) { .upload-success-mascot { animation:none; } }
@@ -788,3 +795,53 @@ li:has(> .approval-dismissed) { display: none; }
 .work-label-glow { position:absolute; inset:0; color:#fff; text-shadow:0 0 5px #ffffffb3,0 0 10px #ffffff66; pointer-events:none; mask-image:linear-gradient(90deg,transparent,#000 40%,#000 60%,transparent); mask-size:42% 100%; mask-repeat:no-repeat; animation:work-label-sweep var(--work-duration) var(--work-easing) infinite; }
 @keyframes work-label-sweep { from { mask-position:-80% 0; } to { mask-position:181% 0; } }
 @media(prefers-reduced-motion:reduce) { .work-label-glow { animation:none; display:none; } }
+
+/* Shared navigation row; expanded schedules retain the full responsive width. */
+.task-navigation { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; width:100%; max-width:696px; margin:0 auto 8px; padding:0 12px; align-items:start; }
+.task-navigation > .schedule-slot { min-width:0; padding:0; margin:0; max-width:none; }
+.task-navigation > .schedule-slot:has(.approval-dock-expanded) { grid-column:1 / -1; }
+.task-navigation .approval-dock-heading { min-width:0; }
+.task-navigation .approval-dock-label { min-width:0; }
+.task-manager-sheet { height:58dvh; max-height:100dvh; padding-top:env(safe-area-inset-top); transition:height .2s ease-out,border-radius .2s ease-out; }
+.task-manager-sheet[data-expanded="true"] { height:100dvh; border-radius:0; }
+.task-manager-sheet[data-dragging="true"] { transition:none; }
+.task-manager-handle { display:flex; align-items:center; justify-content:center; align-self:stretch; flex-shrink:0; height:44px; touch-action:none; user-select:none; cursor:ns-resize; border-radius:inherit; }
+.task-manager-handle > span { width:36px; height:4px; border-radius:999px; background:#fff; }
+.task-manager-handle:focus-visible { outline:2px solid var(--color-accent); outline-offset:-5px; }
+.task-mode-badge { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:20px; height:20px; border-radius:6px; border:1px solid #9aafbf59; background:#637f9433; color:#b5c8d6; box-shadow:0 0 9px #9aafbf35; }
+.task-manager-sheet[data-state="open"] { animation: task-sheet-enter .28s cubic-bezier(.22,1,.36,1) both; }
+.task-manager-sheet[data-state="closed"] { animation: task-sheet-exit .2s ease-in both; }
+@keyframes task-sheet-enter { from { opacity:0; transform:translateY(40px); } to { opacity:1; transform:translateY(0); } }
+@keyframes task-sheet-exit { to { opacity:0; transform:translateY(40px); } }
+@media(prefers-reduced-motion:reduce) { .task-manager-sheet[data-state] { animation:none; transition:none; } }
+
+/* Slide only when the task panel mounts; the overlaid list retains this panel. */
+.task-session-panel[data-enter="true"][data-state="open"] { animation:task-session-enter 220ms cubic-bezier(.22,.8,.3,1) both; }
+@keyframes task-session-enter { from { transform:translate3d(100%,0,0); opacity:.6; } to { transform:translate3d(0,0,0); opacity:1; } }
+@media(prefers-reduced-motion:reduce) { .task-session-panel[data-enter="true"][data-state="open"] { animation:none; } }
+
+.task-context-badge { display:inline-flex; align-items:center; max-width:100%; padding:2px 8px; border:1px solid rgba(255,255,255,.55); border-radius:999px; color:#ededed; background:rgba(255,255,255,.045); box-shadow:0 0 9px rgba(255,255,255,.16),inset 0 0 5px rgba(255,255,255,.045); font-size:.6875rem; line-height:1.6; overflow-wrap:anywhere; }
+
+/* Keep the app's existing search controls; suppress the native second clear icon. */
+.aiot-search-input::-webkit-search-cancel-button,
+.aiot-search-input::-webkit-search-decoration { -webkit-appearance:none; appearance:none; display:none; }
+
+/* One continuous separator with a soft centre highlight, shared by Bot and tasks. */
+.chat-divider-top, .chat-divider-bottom { position: relative; }
+.chat-divider-top { border-top-color: transparent; }
+.chat-divider-bottom { border-bottom-color: transparent; }
+.chat-divider-top::before, .chat-divider-bottom::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgb(230 235 240 / 16%), rgb(230 235 240 / 34%) 22%, rgb(243 246 250 / 40%) 50%, rgb(230 235 240 / 34%) 78%, rgb(230 235 240 / 16%));
+  box-shadow: 0 0 4px rgb(231 237 243 / 9%);
+}
+.chat-divider-top::before { top: -1px; }
+.chat-divider-bottom::after { bottom: -1px; }
+
+@keyframes task-session-exit { from { opacity:1; transform:translateX(0); } to { opacity:0; transform:translateX(100%); } }
+.task-session-panel[data-state="closed"] { animation:task-session-exit 200ms cubic-bezier(.4,0,.2,1) both; }
+@media(prefers-reduced-motion:reduce) { .task-session-panel[data-state="closed"] { animation:none; } }

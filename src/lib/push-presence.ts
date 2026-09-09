@@ -1,4 +1,5 @@
 import { postPushLookup, readPushId } from "./push";
+import { useDesk } from "./store";
 import { hermesFetch } from "./hermes-fetch";
 
 /** Each tab holds its own short lease for this browser's subscription. */
@@ -19,7 +20,7 @@ export function startPushPresence(origin: string, apiKey: string): () => void {
       const res = await hermesFetch(`${window.location.origin}/api/pwa/push/presence`, {
         method: "POST", apiKey, keepalive: true, timeoutMs: 5000,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, clientId, visible: visible && !stopped && document.visibilityState === "visible" }),
+        body: JSON.stringify({ id, clientId, locale: useDesk.getState().locale === "zh-Hant" ? "zh-Hant" : "en", visible: visible && !stopped && document.visibilityState === "visible" }),
       });
       if (res.status === 404) id = "";
     }).catch(() => {}); // Expiration restores background delivery when disconnected.

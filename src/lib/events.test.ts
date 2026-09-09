@@ -374,3 +374,20 @@ test("paginated startup history never shows old working states; final active tur
   applyEventBatch([event(5, "busy", "turn_complete")], state, target);
   assert.deepEqual(calls.at(-1), ["busy", false]);
 });
+
+
+test("replayed native and Bot events keep source timestamps instead of reconnect time", async () => {
+  const { replayEventSink } = await import("./events.ts");
+  const inputs: Parameters<EventSink["upsert"]>[0][] = [];
+  const sink: EventSink = { upsert: input => inputs.push(input), setWorking() {}, activity() {}, notice() {} };
+  const state = { cursor: 0, turns: {} as TurnMap, seen: new Set<string>() };
+  applyEventBatch([
+    { seq: 1, profile: "b", conversation: "c", kind: "user_message", payload: { message_id: "native-old", text: "old", created_at: 1700000000123 } },
+    { seq: 2, profile: "b", conversation: "c", kind: "message", timestamp: 1700000001, payload: { message_id: "bot-old", text: "old answer" } },
+    { seq: 3, profile: "b", conversation: "c", kind: "message", payload: { message_id: "undated-old", text: "undated" } },
+  ], state, replayEventSink(sink));
+  assert.deepEqual(inputs.map(input => input.createdAt), [1700000000123, 1700000001000, 3]);
+  assert.ok(inputs.every(input => input.historical === true));
+  const liveCTX = 1788922763383;
+  assert.ok(inputs.every(input => input.createdAt! < liveCTX));
+});

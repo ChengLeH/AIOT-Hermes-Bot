@@ -84,6 +84,7 @@ test('official Runs completion and approval events use the existing notification
     req.url = '/api/pwa/push/subscribe'; req.method = 'POST'; req.headers = {authorization: 'Bearer test'};
     await service.handle(req, {writeHead: code => assert.equal(code, 200), end() {}}, 'http://hermes.test/api/bot');
     native.push({source:'native-runs',seq:1,kind:'approval_request',profile:'demo',conversation:'chat',event_id:'run-1',payload:{request_id:'request'}});
+    await service.tick();
     native.push({source:'native-runs',seq:2,kind:'turn_complete',profile:'demo',conversation:'chat',event_id:'run-1',payload:{outcome:'success'}});
     await service.tick();
     assert.deepEqual(sent.map(item => item.kind), ['approval_request', 'complete']);
@@ -162,4 +163,69 @@ test('foreground leases suppress only that device, release per tab, and expire s
     assert.equal((await call('presence',{id:a.id,clientId:'x',visible:true})).code,400);
     assert.equal((await call('presence',{id:'unknown',clientId:'tab-one-123',visible:true})).code,404);
   } finally {service.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('failed Bot channel cannot block task events, other sources, or retrying the durable outbox', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiot-isolated-push-'));
+  let offline = false, deliveryFails = false;
+  const taskRows = [];
+  const sent = [];
+  const service = createPushService({ dataDir, pollMs:999999,
+    fetchImpl: async url => {
+      if(url.includes('/profiles')) return {ok:true,json:async()=>({profiles:[]})};
+      if(offline) return {ok:false,status:503};
+      return {ok:true,json:async()=>({events:[]})};
+    },
+    nativeEvents: async()=>({events:[]}),
+    taskEvents: async after=>({events:taskRows.filter(row=>row.seq>after)}),
+    send:async(_sub,payload)=>{if(deliveryFails) throw new Error('unavailable');sent.push(JSON.parse(payload));},
+  });
+  try {
+    for(const key of ['one','two']) {
+      const req=Readable.from([JSON.stringify({subscription:{...sub,endpoint:sub.endpoint+key}})]);
+      req.url='/api/pwa/push/subscribe';req.method='POST';req.headers={authorization:'Bearer '+key};
+      let status;await service.handle(req,{writeHead:code=>status=code,end:()=>{}},'https://hermes.example/api/bot');
+      assert.equal(status,200);
+    }
+    taskRows.push({seq:1,kind:'turn_complete',profile:'demo',conversation:'parent',event_id:'task-one',payload:{outcome:'success'}});
+    offline=true;deliveryFails=true;
+    await service.tick();assert.equal(sent.length,0);
+    deliveryFails=false;
+    await service.tick();
+    assert.equal(sent.length,2,'both owners retry queued task completions while Bot endpoint still fails');
+    await service.tick();assert.equal(sent.length,2,'delivered events remain deduplicated');
+  } finally {service.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('device locale localizes task approval and completion while retaining a safe task destination', async () => {
+  const dataDir=mkdtempSync(join(tmpdir(),'aiot-locale-'));const rows=[];const sent=[];
+  const service=createPushService({dataDir,pollMs:999999,fetchImpl:async url=>({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),nativeEvents:async()=>({events:[]}),taskEvents:async after=>({events:rows.filter(e=>e.seq>after)}),send:async(s,p)=>sent.push({endpoint:s.endpoint,...JSON.parse(p)})});
+  const call=async(action,body)=>{const req=Readable.from([JSON.stringify(body)]);req.url='/api/pwa/push/'+action;req.method='POST';req.headers={authorization:'Bearer valid'};let code,result;await service.handle(req,{writeHead:c=>code=c,end:r=>result=JSON.parse(r)},'https://hermes.example/api/bot');return {code,...result};};
+  try {
+    for(const locale of ['en','zh-Hant']) {
+      const {id}=await call('subscribe',{subscription:{...sub,endpoint:sub.endpoint+locale}});
+      assert.equal((await call('presence',{id,clientId:'example-tab',visible:false,locale})).code,200);
+      assert.equal((await call('presence',{id,clientId:'example-tab',visible:false,locale:'bad'})).code,400);
+    }
+    const taskId='2aaace91-a893-4ffd-b652-1c445c4ded45';
+    rows.push({seq:1,kind:'approval_request',profile:'demo',conversation:'parent',taskId,event_id:'request',payload:{command:'secret'}});
+    await service.tick();
+    rows.push({seq:2,kind:'turn_complete',profile:'demo',conversation:'parent',taskId,event_id:'turn'});
+    await service.tick();
+    assert.deepEqual(sent.map(x=>x.body).sort(),['Approval requested','New reply','有新的回覆','需要你批准'].sort());
+    assert.ok(sent.every(x=>x.taskId===taskId));assert.ok(!JSON.stringify(sent).includes('secret'));
+  }finally{service.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('outbox drops resolved approvals and deleted tasks but retains live completions', async () => {
+ const dataDir=mkdtempSync(join(tmpdir(),'aiot-stale-'));const events=[];const sent=[];let fail=true,current=true;
+ const service=createPushService({dataDir,pollMs:999999,fetchImpl:async url=>({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:events.filter(e=>e.seq>Number(new URL(url).searchParams.get('after')))}}),nativeEvents:async()=>({events:[]}),taskNotificationCurrent:()=>current,send:async(_s,p)=>{if(fail)throw Error('offline');sent.push(JSON.parse(p));}});
+ try {
+  const req=Readable.from([JSON.stringify({subscription:sub})]);req.url='/api/pwa/push/subscribe';req.method='POST';req.headers={authorization:'Bearer valid'};await service.handle(req,{writeHead:c=>assert.equal(c,200),end:()=>{}},'https://hermes.example/api/bot');
+  events.push({seq:1,kind:'approval_request',profile:'demo',conversation:'parent',payload:{request_id:'r1'}});await service.tick();
+  events.push({seq:2,kind:'approval_resolved',profile:'demo',conversation:'parent',payload:{request_id:'r1'}});fail=false;await service.tick();assert.equal(sent.length,0);
+  const taskId='2aaace91-a893-4ffd-b652-1c445c4ded45';fail=true;
+  events.push({seq:3,kind:'turn_complete',profile:'demo',conversation:'parent',taskId,event_id:'deleted'});await service.tick();current=false;fail=false;await service.tick();assert.equal(sent.length,0);
+  current=true;events.push({seq:4,kind:'turn_complete',profile:'demo',conversation:'parent',taskId,event_id:'live'});await service.tick();assert.equal(sent.length,1);
+ }finally{service.close();rmSync(dataDir,{recursive:true,force:true});}
 });

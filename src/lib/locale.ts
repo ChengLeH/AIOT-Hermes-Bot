@@ -258,9 +258,9 @@ const EN: { [K in keyof typeof ZH]: string } = {
   "status.online": "Online",
   "status.offline": "Offline",
   "age.justNow": "Just now",
-  "age.minutes": "{n}m",
-  "age.hours": "{n}h",
-  "age.days": "{n}d",
+  "age.minutes": "{n} min ago",
+  "age.hours": "{n} hr ago",
+  "age.days": "{n}d ago",
   "approval.title": "Approval needed",
   "approval.notify": "Approval needed",
   "approval.command": "Command details",
@@ -333,4 +333,69 @@ export function localizeNotice(locale: Locale | null | undefined, value: string 
 
 export function htmlLang(locale: Locale | null | undefined): string {
   return resolveLocale(locale) === "en" ? "en" : "zh-Hant-TW";
+}
+
+const TASK_STATUS_LABELS: Record<string, [string, string]> = {
+  idle: ["待命", "Idle"],
+  ready: ["準備就緒", "Ready"],
+  preparing: ["準備附件", "Preparing attachments"],
+  submitting: ["提交中", "Submitting"],
+  waiting_approval: ["等待批准", "Waiting for approval"],
+  waiting_input: ["等待補充資訊", "Waiting for input"],
+  disconnected: ["連線中斷", "Disconnected"],
+  unknown: ["等待確認狀態", "Status unconfirmed"],
+  interrupted: ["已停止", "Stopped"],
+  queued: ["排隊中", "Queued"],
+  pending: ["等待中", "Pending"],
+  working: ["執行中", "Working"],
+  running: ["執行中", "Running"],
+  waiting: ["等待回覆", "Waiting"],
+  paused: ["已暫停", "Paused"],
+  done: ["已完成", "Done"],
+  completed: ["已完成", "Completed"],
+  failed: ["執行失敗", "Failed"],
+  error: ["發生錯誤", "Error"],
+  cancelled: ["已取消", "Cancelled"],
+  canceled: ["已取消", "Cancelled"],
+};
+
+/** Translate runtime status codes, never expose a new backend code as UI copy. */
+export function taskStatusLabel(locale: Locale | null | undefined, status: string): string {
+  const labels = Object.prototype.hasOwnProperty.call(TASK_STATUS_LABELS, status) ? TASK_STATUS_LABELS[status] : TASK_STATUS_LABELS.unknown;
+  return labels[resolveLocale(locale) === "en" ? 1 : 0];
+}
+
+/** Only known server-generated defaults; preserve actual commands, questions and model text. */
+export function localizeTaskNotice(locale: Locale | null | undefined, value: string | null | undefined): string {
+  const defaults = [
+    ["Hermes 要求核准以下操作。", "Hermes requests approval for the following action."],
+    ["Hermes 等待補充資訊。", "Hermes is waiting for more information."],
+  ];
+  const text = value || "";
+  if (resolveLocale(locale) === "zh-Hant") {
+    const approval = /^Server '([^'\r\n]+)' is configured 'trust: untrusted'\. Approve to run '([^'\r\n]+)' once, or deny to block it\.$/.exec(text);
+    if (approval) return `伺服器「${approval[1]}」設定為「trust: untrusted」。允許一次即可執行「${approval[2]}」，或拒絕以阻止執行。`;
+    const operation = /^MCP tool '([^'\r\n]+)' on UNTRUSTED server '([^'\r\n]+)' wants to run\. This tool is write-capable \(no readOnlyHint=true annotation\) and may modify external state\.$/.exec(text);
+    if (operation) return `不受信任的伺服器「${operation[2]}」上的 MCP 工具「${operation[1]}」要求執行。此工具具備寫入能力（未標註 readOnlyHint=true），可能修改外部狀態。`;
+  }
+  const known = defaults.find((pair) => pair.includes(text));
+  return known ? known[resolveLocale(locale) === "en" ? 1 : 0] : localizeNotice(locale, text);
+}
+
+/** Only display upstream deadline fields; receipt time is not an expiry baseline. */
+export function approvalDeadlineLabels(locale: Locale | null | undefined, deadline: {
+  timeoutSeconds?: number | null;
+  expiresAt?: string | null;
+}): string[] {
+  const en = resolveLocale(locale) === "en";
+  const labels: string[] = [];
+  if (typeof deadline.timeoutSeconds === "number" && Number.isFinite(deadline.timeoutSeconds) && deadline.timeoutSeconds >= 0) {
+    labels.push(en ? `Time limit: ${deadline.timeoutSeconds} seconds` : `期限：${deadline.timeoutSeconds} 秒`);
+  }
+  const expires = typeof deadline.expiresAt === "string" ? Date.parse(deadline.expiresAt) : NaN;
+  if (Number.isFinite(expires)) {
+    const date = new Date(expires).toLocaleString(en ? "en" : "zh-TW");
+    labels.push(en ? `Deadline: ${date}` : `截止時間：${date}`);
+  }
+  return labels.length ? labels : [en ? "No deadline provided by Hermes" : "Hermes 未提供期限"];
 }

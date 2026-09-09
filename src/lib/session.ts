@@ -1,4 +1,5 @@
 import type { NativeBotProfile } from "./bot-catalog";
+import { encryptedBrowserStorage } from "./encrypted-storage.ts";
 
 export type SessionView = "roster" | "chat" | "settings";
 
@@ -237,7 +238,17 @@ export function memoryStorage(initial: Record<string, string> = {}): SessionStor
   return api;
 }
 
-export function browserStorage(): SessionStorage | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage;
+export async function readBrowserDeskSession(origin: string): Promise<DeskSession | null> {
+  if (!origin || typeof indexedDB === "undefined") return null;
+  const raw = await encryptedBrowserStorage().getItem(deskSessionKey(origin));
+  if (!raw) return null;
+  return readDeskSession(origin, memoryStorage({ [deskSessionKey(origin)]: raw }));
+}
+
+export async function writeBrowserDeskSession(session: DeskSession): Promise<void> {
+  if (!session.origin || typeof indexedDB === "undefined") return;
+  const storage = memoryStorage();
+  writeDeskSession(session, storage);
+  const raw = storage.getItem(deskSessionKey(session.origin));
+  if (raw) await encryptedBrowserStorage().setItem(deskSessionKey(session.origin), raw);
 }

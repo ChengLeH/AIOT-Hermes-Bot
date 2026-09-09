@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   APP_BRAND,
+  approvalDeadlineLabels,
   APP_SLOGAN,
   countLabel,
   detectLocale,
   localizeNotice,
+  localizeTaskNotice,
+  taskStatusLabel,
   t,
 } from "./locale.ts";
 
@@ -132,4 +135,60 @@ test("approval and completion copy is bilingual and generic", () => {
   assert.equal(t("zh-Hant", "chat.copy"), "複製");
   assert.equal(t("en", "chat.copied"), "Copied");
   assert.equal(t("zh-Hant", "chat.code"), "程式碼");
+});
+
+
+test("session statuses and exact backend defaults follow the selected locale", () => {
+  for (const status of ["preparing", "running", "waiting_approval", "waiting_input", "disconnected", "unknown", "completed", "interrupted"]) {
+    assert.doesNotMatch(taskStatusLabel("en", status), /[\u4e00-\u9fff]/);
+    assert.match(taskStatusLabel("zh-Hant", status), /[\u4e00-\u9fff]/);
+  }
+  assert.equal(taskStatusLabel("en", "future_runtime_status"), "Status unconfirmed");
+  assert.equal(taskStatusLabel("zh-Hant", "constructor"), "等待確認狀態");
+  assert.equal(localizeTaskNotice("en", "Hermes 要求核准以下操作。"), "Hermes requests approval for the following action.");
+  assert.equal(localizeTaskNotice("en", "Hermes 等待補充資訊。"), "Hermes is waiting for more information.");
+  assert.equal(localizeTaskNotice("zh-Hant", "Hermes is waiting for more information."), "Hermes 等待補充資訊。");
+  const actualQuestion = "請選擇 report.csv 或 report.xlsx";
+  assert.equal(localizeTaskNotice("en", actualQuestion), actualQuestion);
+  const command = "echo 'Hermes 等待補充資訊。'";
+  assert.equal(localizeTaskNotice("en", command), command);
+});
+
+test("queued upload error keys can change language without reuploading", () => {
+  for (const key of ["error.audioVideo", "error.fileKind", "error.fileTooBig", "error.uploadFail"] as const) {
+    assert.doesNotMatch(localizeNotice("en", key), /[\u4e00-\u9fff]/);
+    assert.match(localizeNotice("zh-Hant", key), /[\u4e00-\u9fff]/);
+  }
+  assert.equal(t("en", "age.minutes", { n: 5 }), "5 min ago");
+});
+
+
+test("official untrusted MCP approval templates preserve tool names and write warning", () => {
+  const description = "Server 'fixture_bridge' is configured 'trust: untrusted'. Approve to run 'fixture_probe' once, or deny to block it.";
+  const operation = "MCP tool 'fixture_probe' on UNTRUSTED server 'fixture_bridge' wants to run. This tool is write-capable (no readOnlyHint=true annotation) and may modify external state.";
+  assert.equal(localizeTaskNotice("zh-Hant", description), "伺服器「fixture_bridge」設定為「trust: untrusted」。允許一次即可執行「fixture_probe」，或拒絕以阻止執行。");
+  assert.equal(localizeTaskNotice("zh-Hant", operation), "不受信任的伺服器「fixture_bridge」上的 MCP 工具「fixture_probe」要求執行。此工具具備寫入能力（未標註 readOnlyHint=true），可能修改外部狀態。");
+  assert.equal(localizeTaskNotice("en", description), description);
+  assert.equal(localizeTaskNotice("en", operation), operation);
+  for (const arbitrary of [`echo "${operation}"`, `The model said: ${description}`, `${operation} Additional instructions.`]) {
+    assert.equal(localizeTaskNotice("zh-Hant", arbitrary), arbitrary);
+  }
+});
+
+
+test("approval deadlines use only upstream duration or expiry in both languages", () => {
+  assert.deepEqual(approvalDeadlineLabels("zh-Hant", { timeoutSeconds: 37 }), ["期限：37 秒"]);
+  assert.deepEqual(approvalDeadlineLabels("en", { timeoutSeconds: 37 }), ["Time limit: 37 seconds"]);
+  assert.deepEqual(approvalDeadlineLabels("zh-Hant", {}), ["Hermes 未提供期限"]);
+  assert.deepEqual(approvalDeadlineLabels("en", {}), ["No deadline provided by Hermes"]);
+  assert.deepEqual(approvalDeadlineLabels("en", { timeoutSeconds: -1, expiresAt: "invalid" }), ["No deadline provided by Hermes"]);
+  assert.deepEqual(approvalDeadlineLabels("en", { timeoutSeconds: Infinity }), ["No deadline provided by Hermes"]);
+  assert.deepEqual(approvalDeadlineLabels("en", { timeoutSeconds: 0 }), ["Time limit: 0 seconds"]);
+  const expiresAt = "2026-09-09T00:00:00Z";
+  const expiryOnly = approvalDeadlineLabels("zh-Hant", { expiresAt });
+  assert.equal(expiryOnly.length, 1);
+  assert.match(expiryOnly[0], /^截止時間：/);
+  const both = approvalDeadlineLabels("en", { timeoutSeconds: 37, expiresAt });
+  assert.equal(both[0], "Time limit: 37 seconds");
+  assert.match(both[1], /^Deadline: /);
 });

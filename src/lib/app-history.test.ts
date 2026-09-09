@@ -46,3 +46,26 @@ test("Android back unwinds search then chat to the roster", () => {
 
   Reflect.deleteProperty(globalThis, "window");
 });
+
+test("leaving settings for roster makes Android chat back return to roster", () => {
+  const stack: Record<string, unknown>[] = [{}]; let index = 0;
+  const history = {
+    get state() { return stack[index]; },
+    replaceState(state: Record<string, unknown>) { stack[index] = state; },
+    pushState(state: Record<string, unknown>) { stack.splice(++index); stack.push(state); },
+    back() { index = Math.max(0, index - 1); },
+  };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { history } });
+  try {
+    seedAppHistory("settings");
+    seedAppHistory("roster");
+    assert.equal(historyView(history.state), "roster");
+    pushChatHistory();
+    backToRoster(() => assert.fail("chat must have a roster entry"));
+    assert.equal(historyView(history.state), "roster");
+    // A direct chat entry from settings must have the same parent.
+    seedAppHistory("settings");
+    pushChatHistory(); history.back();
+    assert.equal(historyView(history.state), "roster");
+  } finally { Reflect.deleteProperty(globalThis, "window"); }
+});

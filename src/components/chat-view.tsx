@@ -1,16 +1,20 @@
+import { TaskWorkspace, type TaskWorkspaceHandle } from "./task-workspace";
+import { ForkIcon, IndependentTaskIcon } from "./fork-icon";
+import { recentTaskContext } from "@/lib/task-context";
 import { createUploadBatch } from "@/lib/upload-batch";
 import { UploadFeedback } from "./upload-feedback";
 import { localizeSystemNotice } from "@/lib/system-notice";
 import { usePullRefresh } from "@/lib/pull-refresh";
 import { ScheduleDock, type ScheduleDockHandle } from "./schedule-dock";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronUp, LoaderCircle, Paperclip, Pin, Search, SendHorizontal, Square, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronUp, ListTodo, Pin, Search, Square, X } from "lucide-react";
 import { BotAvatar, WorkTicker } from "./bot-avatar";
 import { MessageAttachments, QueuePreview } from "./attachment-media";
 import { CompletionMenu } from "./completion-menu";
 import { ApprovalCardView } from "./approval-card";
 import { ApprovalDock, type ApprovalDockHandle } from "./approval-dock";
 import { BubbleCopy } from "./bubble-copy";
+import { ComposerAttachmentButton, ComposerSendButton } from "./composer-buttons";
 import {
   canUploadAttachments,
   fileKindError,
@@ -51,6 +55,11 @@ import { findMessageMatches, nextMatchIndex, searchCountLabel } from "@/lib/chat
 import { jumpLatestBottomPx, transcriptAwayFromBottom } from "@/lib/jump-latest";
 import { backToRoster, closeSearchHistory, historySearchOpen, pushSearchHistory } from "@/lib/app-history";
 
+function blurTextInput() {
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && (focused.matches("input, textarea") || focused.isContentEditable)) focused.blur();
+}
+
 export function ChatView() {
   const activeBotId = useDesk((s) => s.activeBotId);
   const currentView = useDesk((s) => s.view);
@@ -75,6 +84,11 @@ export function ChatView() {
   const locale = resolveLocale(useDesk((s) => s.locale));
   const pull = usePullRefresh();
   const approvals = useDesk((s) => s.approvals);
+  const taskWorkspaceRef = useRef<TaskWorkspaceHandle>(null);
+  const [forkArmed, setForkArmed] = useState(false);
+  const [independentArmed, setIndependentArmed] = useState(false);
+  const [taskError, setTaskError] = useState("");
+  const [creatingTask, setCreatingTask] = useState(false);
   const scheduleDockRef = useRef<ScheduleDockHandle>(null);
   const approvalDockRef = useRef<ApprovalDockHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -141,6 +155,8 @@ export function ChatView() {
   useEffect(() => {
     for (const item of chipsRef.current) revokeQueuedPreview(item);
     setChips([]);
+    setForkArmed(false);
+    setTaskError("");
     setFinding(false);
     setFindQuery("");
     setFindIndex(0);
@@ -245,6 +261,7 @@ export function ChatView() {
   useEffect(() => {
     const onPopState = (event: PopStateEvent) => {
       if (finding && !historySearchOpen(event.state)) {
+        blurTextInput();
         setFinding(false);
         setFindQuery("");
         setFindIndex(0);
@@ -351,6 +368,7 @@ export function ChatView() {
   }
 
   function closeFinding() {
+    blurTextInput();
     setFinding(false);
     setFindQuery("");
     setFindIndex(0);
@@ -358,6 +376,7 @@ export function ChatView() {
   }
 
   function leaveChat() {
+    if (taskWorkspaceRef.current?.close()) return;
     if (finding) { closeFinding(); return; }
     if (scheduleDockRef.current?.collapse()) return;
     if (approvalDockRef.current?.collapse()) return;
@@ -406,13 +425,23 @@ export function ChatView() {
       const current = latest.bots.find((b) => b.id === botId);
       if (!current?.available || !current.conversation) return;
       if (!connectionLive(latest.connection)) return;
-      if (isTurnBusy(latest.botState[botId], Boolean(latest.sending[botId]))) return;
       if (chipsRef.current.some((item) => item.status !== "ready" || !item.attachment)) return;
       const value = (latest.composerDrafts[botId] ?? "").trim();
       const queued = chipsRef.current;
       const ids = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!.id);
       const meta = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!);
       if (!value && ids.length === 0) return;
+      if (forkArmed || independentArmed || meta.length > 0) {
+        setCreatingTask(true);
+        const useFork = forkArmed || (meta.length > 0 && !independentArmed);
+        const created = await taskWorkspaceRef.current?.create(value || (locale === "en" ? "Please process the attached files." : "請處理附加的檔案。"), meta, { mode: useFork ? "fork" : "independent", context: useFork ? recentTaskContext(latest.messages.filter(message => message.botId === botId)) : [] });
+        if (created && useDesk.getState().activeBotId === botId) {
+          transferQueueToSession(queued);
+          setChips([]); setSuggest([]); setDraft(botId, ""); setForkArmed(false); setIndependentArmed(false); setTaskError("");
+        }
+        return;
+      }
+      if (isTurnBusy(latest.botState[botId], Boolean(latest.sending[botId]))) return;
       // Sending is the user's explicit navigation action. Apply it now, not when
       // a slow acknowledgement arrives after they may have scrolled elsewhere.
       followLatest.current = true;
@@ -434,6 +463,7 @@ export function ChatView() {
         setSuggest([]);
       }
     } finally {
+      setCreatingTask(false);
       submitLock.current = false;
       setWaitingUploads(false);
     }
@@ -507,13 +537,15 @@ export function ChatView() {
 
   const canSend =
     (draft.trim().length > 0 || chips.length > 0) &&
-    !blocked &&
+    (!blocked || forkArmed || independentArmed || chips.length > 0) &&
+    !creatingTask &&
     !waitingUploads &&
     !uploadError &&
     bot.available &&
     live &&
     Boolean(bot.conversation);
-  const showStop = interruptsOn && working;
+  const forkSelected = forkArmed || (chips.length > 0 && !independentArmed);
+  const showStop = interruptsOn && working && !forkArmed && !independentArmed && chips.length === 0;
   const token = liveToken;
 
   return (
@@ -531,7 +563,7 @@ export function ChatView() {
         if (touch.clientX - start.x >= 72 && Math.abs(touch.clientY - start.y) <= 64) leaveChat();
       }}
     >
-      <header className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-2 pr-2">
+      <header className="chat-divider-bottom flex shrink-0 items-center gap-1 border-b border-border px-2 py-2 pr-2">
         <button
           type="button"
           onClick={leaveChat}
@@ -548,6 +580,8 @@ export function ChatView() {
             {working ? t(locale, "chat.workingBar", { name: bot.name }) : presenceOnline ? t(locale, "status.online") : t(locale, "status.offline")}
           </p>
         </div>
+        <button type="button" disabled={!live} aria-label={locale === "en" ? "Start an independent task" : "建立獨立任務"} aria-pressed={independentArmed} onClick={() => {const enabling = !independentArmed;setIndependentArmed(enabling);setForkArmed(false);setTaskError("");if (enabling) areaRef.current?.focus(); else { areaRef.current?.blur(); blurTextInput(); }}} className={cn("icon-toggle grid size-11 shrink-0 place-items-center rounded-lg hover:bg-bg-elevated disabled:opacity-40",(independentArmed) && "icon-toggle-active")}><IndependentTaskIcon /></button>
+        <button type="button" disabled={!live} aria-label={locale === "en" ? "Fork with recent conversation" : "帶入最近對話分岔任務"} aria-pressed={forkSelected} onClick={() => {const enabling = !forkArmed;setForkArmed(enabling);setIndependentArmed(false);setTaskError("");if (enabling) areaRef.current?.focus(); else { areaRef.current?.blur(); blurTextInput(); }}} className={cn("icon-toggle grid size-11 shrink-0 place-items-center rounded-lg hover:bg-bg-elevated disabled:opacity-40",forkSelected && "icon-toggle-active")}><ForkIcon /></button>
         <button
           type="button"
           onClick={() => {
@@ -581,8 +615,10 @@ export function ChatView() {
       </header>
 
       {finding ? (
-        <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
+        <div className="chat-divider-bottom flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
           <input
+            type="search"
+            autoComplete="off"
             value={findQuery}
             autoFocus
             onChange={(e) => {
@@ -590,7 +626,7 @@ export function ChatView() {
               setFindIndex(0);
             }}
             placeholder={t(locale, "chat.findPlaceholder")}
-            className="min-h-11 flex-1 rounded-xl bg-bg-elevated px-3 text-sm text-fg outline-none placeholder:text-subtle"
+            className="aiot-search-input min-h-11 flex-1 rounded-xl bg-bg-elevated px-3 text-sm text-fg outline-none placeholder:text-subtle"
           />
           <span className="min-w-10 px-1 text-center text-xs text-muted">{searchCountLabel(findIndex, matches.length)}</span>
           <button
@@ -646,7 +682,7 @@ export function ChatView() {
             <p className="hermes-copy mt-2 text-sm text-muted">{t(locale, "chat.emptyBody")}</p>
           </div>
         ) : (
-          <ol className="mx-auto flex max-w-2xl flex-col gap-3">
+          <ol className="mx-auto flex max-w-2xl md:max-w-none flex-col gap-3">
             {thread.map((m) => (
               <li
                 key={m.messageId || m.id}
@@ -711,11 +747,22 @@ export function ChatView() {
 
       <div ref={composerRef} className="composer-dock shrink-0">
         {working && !threadApprovals.some((card) => ["pending", "submitting", "error"].includes(card.status)) ? (
-          <div className="mx-auto w-full max-w-2xl px-3 pt-3 pb-1" role="status">
+          <div className="mx-auto w-full max-w-2xl md:max-w-none px-3 pt-3 pb-1" role="status">
             <WorkTicker swatch={bot.swatch} label={t(locale, "chat.workingBar", { name: bot.name })} className="w-full" />
           </div>
         ) : null}
-        {live && <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} />}
+        {live && <div className="task-navigation">
+          <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} />
+          <button type="button" onClick={()=>taskWorkspaceRef.current?.openManager()} className="flex min-h-9 items-center justify-center gap-2 rounded-xl border border-border px-3 py-2 text-xs hover:bg-bg-elevated"><ListTodo className="size-4" />{locale === "en" ? "Tasks" : "任務管理"}</button>
+          <TaskWorkspace ref={taskWorkspaceRef} bot={bot} connection={connection} locale={locale} onCompleted={task=>{
+            const messageId=`aiot-task:${task.id}:${task.turn || 0}`;
+            const desk=useDesk.getState();
+            if(desk.connection.origin!==connection.origin || desk.connection.apiKey!==connection.apiKey || desk.messages.some(m=>m.messageId===messageId)) return;
+            desk.upsertEventMessage({profile:bot.profile,conversation:bot.conversation,messageId,role:"assistant",text:locale === "en" ? `Task completed: ${task.title}\nOpen Tasks to view the result or continue the conversation.` : `任務已完成：${task.title}\n可從「任務管理」查看結果或繼續追問。`});
+          }} />
+        </div>}
+        {(forkArmed || independentArmed || chips.length > 0) && <div className="mx-auto flex max-w-2xl md:max-w-none items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs text-fg">{forkSelected ? <ForkIcon /> : <IndependentTaskIcon />}<span className="flex-1">{forkSelected ? (locale === "en" ? "Fork task · includes up to 7 recent messages" : "分岔任務 · 帶入最近最多 7 則訊息") : (locale === "en" ? "Independent task · this message and attachments only" : "獨立任務 · 只帶入本次訊息與附件")}</span>{chips.length === 0 && <button type="button" aria-label={locale === "en" ? "Cancel task mode" : "取消任務模式"} onClick={()=>{setForkArmed(false);setIndependentArmed(false);areaRef.current?.blur();blurTextInput();}}><X className="size-4" /></button>}</div>}
+        {taskError && <p role="alert" className="mx-auto max-w-2xl md:max-w-none px-3 py-2 text-sm">{taskError}</p>}
         <ApprovalDock
           key={bot.id}
           ref={approvalDockRef}
@@ -735,11 +782,11 @@ export function ChatView() {
             e.preventDefault();
             void submit();
           }}
-          className={cn("shrink-0 px-3 pt-2 pb-2", working ? "" : "border-t border-border")}
+          className="chat-divider-top shrink-0 border-t border-border px-3 pt-2 pb-2"
         >
           {uploadFeedback && <UploadFeedback key={uploadFeedback.id} ok={uploadFeedback.ok} locale={locale} onDismiss={() => setUploadFeedback(null)} />}
           {chips.length > 0 ? (
-            <ul className="mx-auto mb-2 flex max-w-2xl flex-wrap gap-1.5">
+            <ul className="mx-auto mb-2 flex max-w-2xl md:max-w-none flex-wrap gap-1.5">
               {chips.map((c) => (
                 <QueuePreview
                   key={c.localId}
@@ -763,7 +810,7 @@ export function ChatView() {
               onSelect={applySuggestion}
             />
           ) : null}
-          <div className="mx-auto flex max-w-2xl items-end gap-2 py-2">
+          <div className="mx-auto flex max-w-2xl md:max-w-none items-end gap-2 py-2">
             {uploadsOn ? (
               <>
                 <input
@@ -777,23 +824,20 @@ export function ChatView() {
                     e.target.value = "";
                   }}
                 />
-                <button
-                  type="button"
+                <ComposerAttachmentButton
                   disabled={!live || !bot.available || !bot.conversation || chips.length >= MAX_ATTACHMENTS || blocked || waitingUploads}
                   onClick={() => fileRef.current?.click()}
-                  className="grid size-11 shrink-0 place-items-center rounded-xl bg-bg-elevated text-fg disabled:opacity-40"
                   aria-label={t(locale, "chat.attach")}
-                >
-                  <Paperclip className="size-4" />
-                </button>
+                />
               </>
             ) : null}
             <textarea
+              autoComplete="off"
               ref={areaRef}
               key={botId}
               value={draft}
               rows={1}
-              disabled={!live || !bot.available || blocked}
+              disabled={!live || !bot.available || (blocked && !forkArmed && !independentArmed && chips.length === 0) || creatingTask}
               onChange={(e) => {
                 const el = e.target;
                 setDraft(botId, el.value);
@@ -870,14 +914,11 @@ export function ChatView() {
                 <Square className="size-3.5 fill-current" />
               </button>
             ) : (
-              <button
-                type="submit"
+              <ComposerSendButton
                 disabled={!canSend}
-                className="grid size-11 min-h-[44px] min-w-[44px] shrink-0 place-items-center rounded-xl bg-accent text-accent-fg disabled:opacity-40"
                 aria-label={waitingUploads ? (locale === "en" ? "Waiting for uploads" : "等待附件上傳完成") : t(locale, "chat.send")}
-              >
-                {waitingUploads ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
-              </button>
+                loading={waitingUploads}
+              />
             )}
           </div>
         </form>

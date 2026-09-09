@@ -18,21 +18,24 @@ function sanitizeVisiblePush(raw) {
         : typeof data.session === "string"
           ? data.session
           : "";
+  const task = typeof data.taskId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(data.taskId) ? { taskId: data.taskId } : {};
   if (isApprovalPush(data)) {
     return {
       title: "aiot",
-      body: "Approval requested",
+      body: data.locale === "zh-Hant" ? "需要你批准" : "Approval requested",
       tag: typeof data.tag === "string" && data.tag ? data.tag : profile ? `approval:${profile}:${sessionId}` : "approval",
       profile,
       sessionId,
+      ...task,
     };
   }
   return {
     title: typeof data.title === "string" && data.title.trim() ? data.title : "aiot",
-    body: typeof data.body === "string" ? data.body : "",
+    body: data.kind === "complete" ? (data.locale === "zh-Hant" ? "有新的回覆" : "New reply") : typeof data.body === "string" ? data.body : "",
     tag: typeof data.tag === "string" ? data.tag : "",
     profile,
     sessionId,
+    ...task,
   };
 }
 
@@ -78,7 +81,7 @@ async function deliverPush(data) {
   await self.registration.showNotification(data.title || "aiot", {
     body: data.body || "",
     tag: data.tag || undefined,
-    data: { profile: data.profile || "", sessionId: data.sessionId || "" },
+    data: { profile: data.profile || "", sessionId: data.sessionId || "", ...(data.taskId ? { taskId: data.taskId } : {}) },
   });
 }
 
@@ -103,6 +106,7 @@ self.addEventListener("notificationclick", (event) => {
   const url = new URL("/", self.location.origin);
   if (d.profile) url.searchParams.set("profile", String(d.profile));
   if (d.sessionId) url.searchParams.set("session", String(d.sessionId));
+  if (typeof d.taskId === "string" && /^[a-f0-9-]{36}$/i.test(d.taskId)) url.searchParams.set("task", d.taskId);
   const target = url.toString();
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (windows) => {
@@ -113,6 +117,7 @@ self.addEventListener("notificationclick", (event) => {
             type: "open-session",
             profile: d.profile || "",
             sessionId: d.sessionId || "",
+            taskId: d.taskId || "",
           });
           return;
         }

@@ -9,7 +9,7 @@ test('presence follows visibility, clears on cleanup and uses keepalive without 
   const calls=[],events={};let interval;
   const document={visibilityState:'visible',addEventListener:(k,f)=>events[k]=f,removeEventListener:k=>delete events[k]};
   const window={location:{origin:'https://app.test'},addEventListener:(k,f)=>events[k]=f,removeEventListener:k=>delete events[k],setInterval:f=>(interval=f,1)};
-  const context={document,window,navigator:{serviceWorker:{}},crypto:{randomUUID:()=> 'synthetic-tab'},clearInterval(){},readPushId:()=> 'device-id',hermesFetch:async(url,options)=>{calls.push({url,options});return {status:200};}};
+  const context={document,window,useDesk:{getState:()=>({locale:'en'})},navigator:{serviceWorker:{}},crypto:{randomUUID:()=> 'synthetic-tab'},clearInterval(){},readPushId:()=> 'device-id',hermesFetch:async(url,options)=>{calls.push({url,options});return {status:200};}};
   runInNewContext(script,context);
   const flush=()=>new Promise(resolve=>setImmediate(resolve));
   const stop=context.startPushPresence('https://hermes.test','synthetic-key');await flush();
@@ -19,5 +19,5 @@ test('presence follows visibility, clears on cleanup and uses keepalive without 
   interval();await flush();assert.equal(calls.length,2);
   document.visibilityState='visible';events.pageshow();await flush();assert.equal(JSON.parse(calls[2].options.body).visible,true);
   stop();await flush();assert.equal(JSON.parse(calls[3].options.body).visible,false);
-  assert.ok(calls.every(c=>c.options.keepalive));assert.equal(Object.keys(events).length,0);
+  assert.ok(calls.every(c=>c.options.keepalive));assert.ok(calls.every(c=>JSON.parse(c.options.body).locale==='en'));assert.equal(Object.keys(events).length,0);
 });

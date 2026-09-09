@@ -28,7 +28,7 @@ export function sentenceBubbles(text: string, streaming: boolean): string[] {
       }
     }
     const c = text[i];
-    if (!fence && !inline && /[|*_\[]/.test(c)) structured = true;
+    if (!fence && !inline && /[|*_[]/.test(c)) structured = true;
     if (!fence && c === "`") inline = !inline;
     if (!fence && !inline) {
       const cjkEnd = /[。！？]/.test(c);

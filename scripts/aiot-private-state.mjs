@@ -5,6 +5,15 @@ import { join } from "node:path";
 
 const AAD = Buffer.from("aiot-push-private-v1", "utf8");
 const KEYCHAIN_SERVICE = "AIOT Hermes Bot";
+const STATE_FILES = ["push-private.json", "native-runs.json", "task-sessions.json"];
+const envelopeFields = ["version", "cipher", "iv", "tag", "ciphertext"];
+const isEnvelope = value => value && typeof value === "object" && envelopeFields.some(field => Object.hasOwn(value, field));
+function hasEncryptedState(dataDir) {
+  return STATE_FILES.some(name => {
+    try { return isEnvelope(JSON.parse(readFileSync(join(dataDir, name), "utf8"))); }
+    catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  });
+}
 
 function validKey(value) {
   try {
@@ -30,42 +39,50 @@ function fileKey(dataDir) {
   return key;
 }
 
-function macOSKeychainKey() {
+function macOSKeychainKey(command, canCreate) {
   const account = "push-state-v1";
+  let raw;
   try {
-    const existing = validKey(execFileSync("security", ["find-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }));
-    if (existing) return existing;
-  } catch {
-    // First use has no item yet.
+    raw = command("security", ["find-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch (error) {
+    // security maps errSecItemNotFound (-25300) to exit status 44. All other
+    // failures (including locked/denied access) must preserve the existing key.
+    if (error.status !== 44 || !canCreate) throw new Error("AIOT state Keychain unavailable");
+    const key = randomBytes(32);
+    try {
+      // No -U: concurrent initialization must never replace an existing item.
+      command("security", ["add-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w", key.toString("base64url")], {
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+    } catch { throw new Error("AIOT state Keychain initialization unavailable"); }
+    return key;
   }
-  const key = randomBytes(32);
-  execFileSync("security", ["add-generic-password", "-U", "-a", account, "-s", KEYCHAIN_SERVICE, "-w", key.toString("base64url")], {
-    stdio: ["ignore", "ignore", "ignore"],
-  });
+  const key = validKey(raw);
+  if (!key) throw new Error("Invalid AIOT state Keychain key");
   return key;
 }
 
-function stateKey(dataDir) {
+function stateKey(dataDir, { platform, useKeychain, keychainCommand }) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  // Once the portable fallback exists, keep using it so a temporary Keychain
-  // outage cannot make an existing encrypted state unreadable.
   if (existsSync(join(dataDir, "push-state.key"))) return fileKey(dataDir);
-  if (process.platform === "darwin" && process.env.AIOT_USE_KEYCHAIN === "1") {
-    try { return macOSKeychainKey(); } catch {
-      // A locked or unavailable Keychain falls back to a private 0600 key.
-    }
+  const encrypted = hasEncryptedState(dataDir);
+  if (platform === "darwin" && useKeychain) {
+    return macOSKeychainKey(keychainCommand, !encrypted);
   }
+  // Missing file keys and changed backend settings are recovery conditions,
+  // never permission to mint a replacement key for existing encrypted data.
+  if (encrypted) throw new Error("AIOT state key unavailable");
   return fileKey(dataDir);
 }
 
-export function createPrivateStateCipher({ dataDir, fileName = "push-private.json" }) {
-  if (!["push-private.json", "native-runs.json"].includes(fileName)) throw new Error("Invalid private state file");
-  const aad = fileName === "push-private.json" ? AAD : Buffer.from("aiot-native-runs-v1", "utf8");
+export function createPrivateStateCipher({ dataDir, fileName = "push-private.json",
+  platform = process.platform, useKeychain = process.env.AIOT_USE_KEYCHAIN === "1", keychainCommand = execFileSync }) {
+  if (!STATE_FILES.includes(fileName)) throw new Error("Invalid private state file");
+  const aad = fileName === "push-private.json" ? AAD : Buffer.from(fileName === "native-runs.json" ? "aiot-native-runs-v1" : "aiot-task-sessions-v1", "utf8");
   const file = join(dataDir, fileName);
-  const key = stateKey(dataDir);
+  const key = stateKey(dataDir, { platform, useKeychain, keychainCommand });
   return {
     file,
     read(fallback) {
@@ -76,7 +93,11 @@ export function createPrivateStateCipher({ dataDir, fileName = "push-private.jso
         throw error;
       }
       // One-time migration from the v0.1.2 private-permission JSON file.
-      if (parsed?.version !== 1 || parsed?.cipher !== "aes-256-gcm") return parsed;
+      if (!isEnvelope(parsed)) {
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid legacy AIOT state");
+        return parsed;
+      }
+      if (parsed.version !== 1 || parsed.cipher !== "aes-256-gcm") throw new Error("Invalid encrypted AIOT state");
       const iv = Buffer.from(parsed.iv || "", "base64url");
       const tag = Buffer.from(parsed.tag || "", "base64url");
       const ciphertext = Buffer.from(parsed.ciphertext || "", "base64url");

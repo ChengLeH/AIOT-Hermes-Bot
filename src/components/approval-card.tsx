@@ -41,7 +41,9 @@ export function ApprovalCardView({
   const connection = useDesk((s) => s.connection);
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  // Old resolved cards must never paint again when re-entering a conversation.
+  // Fresh resolutions still run the existing five-second fade lifecycle.
+  const [dismissed, setDismissed] = useState(() => approvalDismissDelayMs(card) === 0);
   const cardRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const delay = approvalDismissDelayMs(card);

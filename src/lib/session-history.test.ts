@@ -73,3 +73,62 @@ test("late history cannot overwrite a new turn or connection", async () => {
     );
   }
 });
+
+
+test("undated old backfill stays before a just-sent live context marker", () => {
+  const live = { id: "live", messageId: "live", botId: "b", role: "user", content: "CTX-new", createdAt: 2000 } as ChatMessage;
+  const rows = missingSessionMessages([live], [
+    { messageId: "old-1", role: "user", text: "old question" },
+    { messageId: "old-2", role: "assistant", text: "old answer" },
+  ]);
+  assert.deepEqual(rows.map(row => row.createdAt), [1998, 1999]);
+  assert.ok(rows.every(row => row.createdAt! < live.createdAt));
+});
+
+test("undated rows use surrounding matched occurrences and do not cross newer live data", () => {
+  const existing = [
+    { id: "a", messageId: "a", botId: "b", role: "user", content: "old question", createdAt: 1000 },
+    { id: "ctx", messageId: "ctx", botId: "b", role: "user", content: "CTX-new", createdAt: 2000 },
+  ] as ChatMessage[];
+  const rows = missingSessionMessages(existing, [
+    { messageId: "older", role: "assistant", text: "earlier" },
+    { messageId: "a", role: "user", text: "old question" },
+    { messageId: "answer", role: "assistant", text: "old answer" },
+  ]);
+  assert.deepEqual(rows.map(row => row.createdAt), [999, 1500]);
+});
+
+test("fresh undated history is deterministic in API order and real timestamps stay intact", () => {
+  const rows = [
+    { messageId: "a", role: "user" as const, text: "a" },
+    { messageId: "b", role: "assistant" as const, text: "b" },
+  ];
+  assert.deepEqual(missingSessionMessages([], rows).map(row => row.createdAt), [0, 1]);
+  assert.equal(missingSessionMessages([], [{ ...rows[0], createdAt: 12345 }])[0].createdAt, 12345);
+});
+
+
+test("existing corrupted imported timestamps repair before live CTX without losing edited content", () => {
+  const existing = [
+    { id: "ctx", messageId: "native-ctx", botId: "b", role: "user", content: "CTX-new", createdAt: 2000 },
+    { id: "h1", messageId: "hermes-worker:chat:1", botId: "b", role: "user", content: "old question edited", createdAt: 2001 },
+    { id: "h2", messageId: "hermes-worker:chat:2", botId: "b", role: "assistant", content: "old answer", createdAt: 2002 },
+    { id: "ack", messageId: "native-ack", botId: "b", role: "assistant", content: "ACK-new", createdAt: 2003 },
+  ] as ChatMessage[];
+  const corrections = missingSessionMessages(existing, [
+    { messageId: "hermes-worker:chat:1", role: "user", text: "old question" },
+    { messageId: "hermes-worker:chat:2", role: "assistant", text: "old answer" },
+  ]);
+  assert.deepEqual(corrections.map(row => row.createdAt), [1998, 1999]);
+  assert.equal(corrections[0].text, "old question edited");
+  const corrected = existing.map(message => {
+    const correction = corrections.find(row => row.messageId === message.messageId);
+    return correction ? { ...message, createdAt: correction.createdAt! } : message;
+  }).sort((a, b) => a.createdAt - b.createdAt);
+  assert.deepEqual(corrected.slice(-2).map(row => row.content), ["CTX-new", "ACK-new"]);
+  assert.equal(corrected.length, existing.length);
+  assert.deepEqual(missingSessionMessages(corrected, [
+    { messageId: "hermes-worker:chat:1", role: "user", text: "old question" },
+    { messageId: "hermes-worker:chat:2", role: "assistant", text: "old answer" },
+  ]), []);
+});

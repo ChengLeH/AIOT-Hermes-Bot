@@ -5,11 +5,10 @@ import { applyEventBatch, replayEventSink, finishEventReplay, type EventSink, ty
 import { useDesk } from "./store";
 import {
   applyProfilePoll,
-  browserStorage,
   consumeRestorePending,
   enableSessionWrites,
   markRestorePending,
-  readDeskSession,
+  readBrowserDeskSession,
   restoreAfterProfiles,
 } from "./session";
 import {
@@ -112,8 +111,7 @@ async function refreshProfiles(): Promise<void> {
   }
   try {
     const catalog = await getBotProfiles(origin, apiKey);
-    const storage = browserStorage();
-    const stored = storage ? readDeskSession(origin, storage) : null;
+    const stored = await readBrowserDeskSession(origin);
     useDesk.getState().syncHermesProfiles(catalog.profiles, catalog.capabilities);
     useDesk.getState().setProbe({
       ok: true,

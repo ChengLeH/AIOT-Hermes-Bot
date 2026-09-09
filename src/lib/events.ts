@@ -29,6 +29,9 @@ export type EventSink = {
     messageId: string;
     role: "user" | "assistant";
     text: string;
+    createdAt?: number;
+    replayOrder?: number;
+    historical?: boolean;
     keepRole?: boolean;
     streaming?: boolean;
     attachments?: AttachmentDescriptor[];
@@ -88,6 +91,9 @@ export function applyBotEvent(
   const payload = ev.payload ?? {};
   const text = typeof payload.text === "string" ? payload.text : "";
   const messageId = messageIdentity(ev, payload);
+  const rawTime = payload.created_at ?? ev.created_at ?? ev.timestamp;
+  const numericTime = typeof rawTime === "number" ? rawTime : typeof rawTime === "string" && /^\d+(?:\.\d+)?$/.test(rawTime) ? Number(rawTime) : undefined;
+  const parsedTime = numericTime !== undefined ? (numericTime < 1e12 ? numericTime * 1000 : numericTime) : typeof rawTime === "string" ? Date.parse(rawTime) : NaN;
   const key = turnKey(profile, conversation);
   const turn = turns[key] ?? { active: false, terminal: false, ids: [] };
 
@@ -105,6 +111,8 @@ export function applyBotEvent(
       messageId,
       role,
       text,
+      ...(Number.isFinite(parsedTime) ? { createdAt: parsedTime } : {}),
+      replayOrder: ev.seq,
       keepRole: kind === "edit",
       streaming: role === "assistant" && turn.active,
       attachments: parseAttachmentList(payload.attachments),
@@ -203,7 +211,11 @@ export function applyEventBatch(
 
 /** During initial history catch-up, keep lifecycle state internal until all pages arrive. */
 export function replayEventSink(sink: EventSink): EventSink {
-  return { ...sink, setWorking: () => {}, activity: () => {}, notice: () => {} };
+  return { ...sink,
+    upsert: input => sink.upsert({ ...input, historical: true,
+      // Legacy undated replay has only sequence order. Never date it at reconnect.
+      createdAt: input.createdAt ?? (Number.isFinite(input.replayOrder) ? input.replayOrder! : 0) }),
+    setWorking: () => {}, activity: () => {}, notice: () => {} };
 }
 
 export function finishEventReplay(

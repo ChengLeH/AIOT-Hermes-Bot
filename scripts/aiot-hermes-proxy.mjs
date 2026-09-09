@@ -1,3 +1,4 @@
+import { createSessionService } from './aiot-session-service.mjs';
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createPushService } from "./aiot-push-service.mjs";
@@ -14,16 +15,23 @@ const execFileAsync = promisify(execFile);
 const setupTokens = new Map();
 const SETUP_TOKEN_TTL_MS = 2 * 60 * 1000;
 const runtimeFile = resolve(process.cwd(), ".aiot/runtime.json");
+let sessionService;
+function localSessionService(){ return sessionService ||= createSessionService({dataDir:dirname(runtimeFile)}); }
 let pushService;
 let nativeRunsService;
 function localPushService() {
   return pushService ||= createPushService({
     dataDir: dirname(runtimeFile),
+    taskEvents: (after,target,authorization)=>localSessionService().events(after,target,authorization),
+    taskNotificationCurrent: (payload,target,authorization)=>localSessionService().isTaskEventCurrent(payload,target,authorization),
     nativeEvents: (after) => localNativeRunsService().events(after),
   });
 }
 function localNativeRunsService() {
-  return nativeRunsService ||= createNativeRunsService({ dataDir: dirname(runtimeFile) });
+  // Completed task references can be injected only into the official native-run
+  // conversation_history. The legacy Bot transport has no equivalent safe field.
+  return nativeRunsService ||= createNativeRunsService({ dataDir: dirname(runtimeFile),
+    loadTaskResultContext: (target,authorization,profile,conversation)=>localSessionService().resultContext(target,authorization,profile,conversation) });
 }
 
 function samePageOrigin(req) {
@@ -159,10 +167,16 @@ async function proxyRequest(req, res, targetUrl) {
       if (value) res.setHeader(name, value);
     }
     res.setHeader("x-content-type-options", "nosniff");
-    if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res);
+    if (upstream.body) {
+      const stream=Readable.fromWeb(upstream.body);
+      // Keep late abort errors handled even after the response pipeline has closed.
+      stream.on("error",()=>{});
+      await pipeline(stream, res);
+    }
     else res.end();
   } catch (error) {
-    json(res, 502, { error: error instanceof Error ? error.message : "proxy_failed" });
+    if (!res.headersSent && !res.destroyed) json(res, 502, { error: "proxy_failed" });
+    else if (!res.destroyed) res.end();
   }
 }
 
@@ -229,6 +243,12 @@ async function localSetup(req, res, incoming) {
 function middleware() {
   return async (req, res, next) => {
     const incoming = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+    if (incoming.pathname.startsWith('/api/bot/sessions/') || incoming.pathname === '/__aiot/session-callback') {
+      if (!samePageOrigin(req)) return json(res,403,{error:'origin_rejected'});
+      const base=readRuntimeTarget();
+      if(!base) return json(res,503,{error:'aiot_not_configured'});
+      return localSessionService().handle(req,res,base);
+    }
     if (incoming.pathname === "/api/bot/native" || incoming.pathname.startsWith("/api/bot/native/")) {
       const base = readRuntimeTarget();
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
@@ -279,20 +299,31 @@ function middleware() {
   };
 }
 
+// Connect/Vite does not observe rejected promises from async middleware. Keep
+// every delegated handler inside an explicit boundary so an upstream outage
+// becomes a request failure, not an unhandled process-level rejection.
+export function containMiddlewareFailure(handler) {
+  return (req, res, next) => Promise.resolve().then(() => handler(req, res, next)).catch(() => {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.end(); return; }
+    json(res, 503, { error: "upstream_service_unavailable" });
+  });
+}
+
 export function aiotHermesProxyPlugin() {
   return {
     name: "aiot:hermes-proxy",
     configureServer(server) {
       const service = localPushService();
       const native = localNativeRunsService();
-      server.httpServer?.once("close", () => { service.close(); native.close(); pushService = undefined; nativeRunsService = undefined; });
-      server.middlewares.use(middleware());
+      server.httpServer?.once("close", () => { service.close(); native.close(); sessionService?.close(); sessionService=undefined; pushService = undefined; nativeRunsService = undefined; });
+      server.middlewares.use(containMiddlewareFailure(middleware()));
     },
     configurePreviewServer(server) {
       const service = localPushService();
       const native = localNativeRunsService();
-      server.httpServer?.once("close", () => { service.close(); native.close(); pushService = undefined; nativeRunsService = undefined; });
-      server.middlewares.use(middleware());
+      server.httpServer?.once("close", () => { service.close(); native.close(); sessionService?.close(); sessionService=undefined; pushService = undefined; nativeRunsService = undefined; });
+      server.middlewares.use(containMiddlewareFailure(middleware()));
     },
   };
 }

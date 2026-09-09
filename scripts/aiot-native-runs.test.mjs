@@ -48,7 +48,7 @@ test("official Hermes runs stay behind the browser Bot key and keep API_SERVER_K
     }
     if (String(url).includes("/api/sessions/bot-chat/messages")) return Response.json({ data: [{ role: "user", content: "previous question" }, { role: "assistant", content: "previous answer" }] });
     if (String(url).endsWith("/v1/runs") && options.method === "POST") {
-      assert.deepEqual(JSON.parse(options.body), { input: "hello", session_id: "bot-chat", conversation_history: [{role:"user",content:"previous question"},{role:"assistant",content:"previous answer"}] });
+      assert.deepEqual(JSON.parse(options.body), { input: "hello", session_id: "bot-chat", conversation_history: [{role:"user",content:"previous question"},{role:"assistant",content:"previous answer"},{role:"assistant",content:"Completed task reference"}] });
       assert.ok(options.headers["Idempotency-Key"]);
       return Response.json({ run_id: "run-one", status: "started" }, { status: 202 });
     }
@@ -69,7 +69,9 @@ test("official Hermes runs stay behind the browser Bot key and keep API_SERVER_K
     if (String(url).endsWith("/v1/runs/run-one/stop")) return Response.json({ status: "stopping" });
     throw new Error(`Unexpected request: ${url}`);
   };
-  const service = createNativeRunsService({ dataDir: join(root, "state"), hermesHome: root, fetchImpl });
+  const resultContextCalls = [];
+  const service = createNativeRunsService({ dataDir: join(root, "state"), hermesHome: root, fetchImpl,
+    loadTaskResultContext: async (...args) => { resultContextCalls.push(args); return [{ role: "assistant", content: "Completed task reference" }]; } });
   try {
     assert.equal((await call(service, "GET", "/api/bot/native/capabilities?profile=demo")).status, 200);
     const skills = await call(service, "GET", "/api/bot/native/skills?profile=demo&query=h3");
@@ -79,6 +81,7 @@ test("official Hermes runs stay behind the browser Bot key and keep API_SERVER_K
     const started = await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "bot-chat", text: "hello" });
     assert.equal(started.status, 202);
     assert.equal(started.body.run_id, "run-one");
+    assert.deepEqual(resultContextCalls, [["http://bot.local/api/bot", "Bearer browser-key", "demo", "bot-chat"]]);
     await service.settled("run-one");
 
     const events = await call(service, "GET", "/api/bot/native/events?after=0");
@@ -183,4 +186,18 @@ test("Session reads probe exact conversation despite absent flags and strip priv
     assert.equal((await call(service,'GET','/api/bot/native/history?profile=demo&conversation=missing')).status,404);
     assert.equal(paths.some(path => path.endsWith('/api/sessions')),false);
   } finally { service.close(); rmSync(root,{recursive:true,force:true}); }
+});
+
+test("legacy undated events recover persisted source run time rather than restart time", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aiot-native-event-time-"));
+  writeFileSync(join(root, "native-runs.json"), JSON.stringify({
+    nextSeq: 2,
+    runs: { older: { runId: "older", profile: "demo", conversation: "chat", status: "completed", createdAt: 1700000000123 } },
+    events: [{ seq: 1, source: "native-runs", event_id: "older", kind: "message", profile: "demo", conversation: "chat", payload: { message_id: "native-older", text: "Old answer" } }],
+  }));
+  const service = createNativeRunsService({ dataDir: root, hermesHome: root });
+  try {
+    const page = await service.events(0);
+    assert.equal(page.events[0].payload.created_at, 1700000000123);
+  } finally { service.close(); rmSync(root, { recursive: true, force: true }); }
 });

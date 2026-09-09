@@ -1,7 +1,9 @@
+import { isImportedSessionMessage } from "./session-history";
 import { resetPreviewCaches } from "./attachment-preview";
 import { isReadingBot } from "./unread";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { encryptedBrowserStorage } from "./encrypted-storage";
 import { botFromProfile, botDisplayName, type Bot } from "./bots";
 import { eyeSwatchesForProfiles } from "./brand";
 import type { NativeBotCapabilities, NativeBotProfile } from "./bot-catalog";
@@ -67,6 +69,7 @@ type DeskState = {
     role: "user" | "assistant";
     text: string;
     createdAt?: number;
+    historical?: boolean;
     keepRole?: boolean;
     streaming?: boolean;
     attachments?: AttachmentDescriptor[];
@@ -235,7 +238,7 @@ export const useDesk = create<DeskState>()(
         set((s) => ({
           bots: s.bots.map((b) => (b.id === botId ? { ...b, conversation } : b)),
         })),
-      upsertEventMessage: ({ profile, conversation, messageId, role, text, createdAt, keepRole, streaming, attachments }) => {
+      upsertEventMessage: ({ profile, conversation, messageId, role, text, createdAt, historical, keepRole, streaming, attachments }) => {
         const bot = get().bots.find((b) => b.profile === profile);
         if (!bot) return;
         void conversation;
@@ -248,13 +251,14 @@ export const useDesk = create<DeskState>()(
                   ? {
                       ...m,
                       content: text,
+                      ...((historical || isImportedSessionMessage(messageId)) && typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
                       streaming,
                       pending: false,
                       role: keepRole ? m.role : role,
                       attachments: mergeAttachmentMeta(m.attachments, attachments),
                     }
                   : m,
-              ),
+              ).sort((a, b) => a.createdAt - b.createdAt),
             };
           }
           const pending = role === "user"
@@ -330,7 +334,7 @@ export const useDesk = create<DeskState>()(
     }),
     {
       name: "hermes-bot-desk-v4",
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => encryptedBrowserStorage()),
       skipHydration: true,
       partialize: (s) => ({
         onboarded: s.onboarded,

@@ -8,6 +8,7 @@ export function pushSubscribePayload(subscription: PushSubscriptionJSON): PushSu
 }
 
 export type VisiblePush = {
+  taskId?: string;
   title: string;
   body: string;
   tag: string;
@@ -34,20 +35,23 @@ export function sanitizeVisiblePush(raw: unknown): VisiblePush {
         : typeof data.session === "string"
           ? data.session
           : "";
+  const task = typeof data.taskId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(data.taskId) ? { taskId: data.taskId } : {};
   if (isApprovalPush(data)) {
     return {
       title: "aiot",
-      body: "Approval requested",
+      body: data.locale === "zh-Hant" ? "需要你批准" : "Approval requested",
       tag: typeof data.tag === "string" && data.tag ? data.tag : profile ? `approval:${profile}:${sessionId}` : "approval",
       profile,
       sessionId,
+      ...task,
     };
   }
   return {
     title: typeof data.title === "string" && data.title.trim() ? data.title : "aiot",
-    body: typeof data.body === "string" ? data.body : "",
+    body: data.kind === "complete" ? (data.locale === "zh-Hant" ? "有新的回覆" : "New reply") : typeof data.body === "string" ? data.body : "",
     tag: typeof data.tag === "string" ? data.tag : "",
     profile,
     sessionId,
+    ...task,
   };
 }

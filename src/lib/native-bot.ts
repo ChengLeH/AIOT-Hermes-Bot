@@ -8,6 +8,8 @@ import { getNativeSkills, getProfileNativeCapabilities, mergeCompletionItems, po
 
 export type BotWireEvent = {
   source?: string;
+  timestamp?: string | number;
+  created_at?: string | number;
   seq?: number;
   profile?: string;
   conversation?: string;
