@@ -1,4 +1,3 @@
-import { usePullRefresh } from "@/lib/pull-refresh";
 import { useMemo } from "react";
 import { Pin, Search, Settings } from "lucide-react";
 import { BotAvatar } from "./bot-avatar";
@@ -24,7 +23,6 @@ type Row = {
 };
 
 export function Roster({ className = "" }: { className?: string }) {
-  const pull = usePullRefresh();
   const bots = useDesk((s) => s.bots);
   const messages = useDesk((s) => s.messages);
   const botState = useDesk((s) => s.botState);
@@ -65,8 +63,7 @@ export function Roster({ className = "" }: { className?: string }) {
   }, [bots, messages, botState, search]);
 
   return (
-    <section {...pull.handlers} className={`flex h-full min-h-0 flex-col bg-bg ${className}`}>
-        {pull.distance > 20 && <div role="status" className="text-center text-xs text-subtle py-2">{locale === "en" ? (pull.distance >= 90 ? "Release to refresh" : "Pull to refresh") : (pull.distance >= 90 ? "放開即可重新整理" : "下拉重新整理")}</div>}
+    <section className={`app-theme-surface flex h-full min-h-0 flex-col bg-bg ${className}`}>
       <header className="flex shrink-0 items-end justify-between gap-3 px-5 pt-5 pb-3">
         <div>
           <BrandMark className="text-xs" />

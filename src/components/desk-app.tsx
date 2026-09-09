@@ -1,3 +1,4 @@
+import { useBackgroundTheme } from "@/lib/background-theme";
 import { requestTaskDeepLink } from "@/lib/task-deep-link";
 import { startPushPresence } from "@/lib/push-presence";
 import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
@@ -30,6 +31,15 @@ import { getBotProfiles } from "@/lib/native-bot";
 import { historyView, pushChatHistory, seedAppHistory } from "@/lib/app-history";
 
 export function DeskApp() {
+  const wallpaper = useBackgroundTheme();
+  useEffect(() => {
+    document.documentElement.style.setProperty("--aiot-wallpaper-image", wallpaper ? `url("${wallpaper.dataUrl}")` : "none");
+    document.body.dataset.aiotWallpaper = wallpaper ? "true" : "false";
+    return () => {
+      document.documentElement.style.removeProperty("--aiot-wallpaper-image");
+      delete document.body.dataset.aiotWallpaper;
+    };
+  }, [wallpaper]);
   const [hydrated, setHydrated] = useState(false);
   const pushOrigin = useDesk((s) => s.connection.origin);
   const pushKey = useDesk((s) => s.connection.apiKey);

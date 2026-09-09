@@ -5,6 +5,7 @@ const options = {
   req: { method: "GET" },
   incoming: new URL("http://local/api/bot/native/jobs?profile=demo"),
   ep: { base: "http://local/p/demo", headers: {}, capabilities: { jobs_admin: false } },
+  profile: "demo",
   readBody: async () => ({}),
 };
 test("probe jobs despite false capabilities and discard private fields", async () => {
@@ -76,7 +77,7 @@ test("create recurring schedule forwards safe fields and delete uses correct end
     name: "Demo",
     prompt: "Say hello",
     schedule: "every 60m",
-    deliver: "local",
+    deliver: "bot-chat:demo",
   });
   const deleted = await handleJobs({
     ...options,

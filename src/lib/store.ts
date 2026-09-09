@@ -1,6 +1,6 @@
 import { isImportedSessionMessage } from "./session-history";
 import { resetPreviewCaches } from "./attachment-preview";
-import { isReadingBot } from "./unread";
+import { shouldShowUnread } from "./unread";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { encryptedBrowserStorage } from "./encrypted-storage";
@@ -37,7 +37,7 @@ type DeskState = {
   locale: Locale | null;
   approvals: ApprovalCard[];
   unreadBots: Record<string, boolean>;
-  markUnread: (id: string) => void;
+  markUnread: (id: string, force?: boolean) => void;
   markRead: (id: string) => void;
   completeOnboarding: () => void;
   resetOnboarding: () => void;
@@ -105,7 +105,7 @@ export const useDesk = create<DeskState>()(
       locale: null,
       approvals: [],
       unreadBots: {},
-      markUnread: (id) => set((s) => ({ unreadBots: { ...s.unreadBots, [id]: !isReadingBot(id, s.activeBotId, s.view, typeof document !== "undefined" && document.visibilityState === "visible") } })),
+      markUnread: (id, force = false) => set((s) => ({ unreadBots: { ...s.unreadBots, [id]: shouldShowUnread(id, s.activeBotId, s.view, typeof document !== "undefined" && document.visibilityState === "visible", force) } })),
       markRead: (id) => set((s) => s.unreadBots[id] ? { unreadBots: { ...s.unreadBots, [id]: false } } : {}),
       completeOnboarding: () => set({ onboarded: true, view: "roster" }),
       resetOnboarding: () => {

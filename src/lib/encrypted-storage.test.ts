@@ -119,3 +119,31 @@ test("Zustand waits for asynchronous encrypted rehydration", async () => {
   assert.equal(store.persist.hasHydrated(), true);
   assert.equal(store.getState().message, "restored");
 });
+
+
+test("a delayed history save does not block independent background storage", async () => {
+  const f = fixture();
+  await f.vault.getKey(true);
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const storage = createEncryptedStateStorage({ origin, vault: {
+    ...f.vault,
+    async putRecord(name, record) {
+      if (name === "desk") { entered(); await gate; }
+      await f.vault.putRecord(name, record);
+    },
+  } });
+  const desk = storage.setItem("desk", "history");
+  await started;
+  try {
+    const result = await Promise.race([
+      Promise.resolve(storage.setItem("background", "picture")).then(() => "saved"),
+      new Promise<string>(resolve => setTimeout(() => resolve("blocked"), 100)),
+    ]);
+    assert.equal(result, "saved");
+    assert.equal(await storage.getItem("background"), "picture");
+  } finally { release(); await desk; }
+  assert.equal(await storage.getItem("desk"), "history");
+});

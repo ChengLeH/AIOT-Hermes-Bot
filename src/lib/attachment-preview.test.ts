@@ -70,12 +70,25 @@ test("queue stays until accept then session preview is kept without persisting b
     },
   ];
   const accepted = true;
-  if (accepted) transferQueueToSession(queued);
-  assert.equal(sessionImageUrl("att-1"), "blob:kept");
+  if (accepted) transferQueueToSession(queued, "origin-a/bot-a/conversation-a");
+  assert.equal(sessionImageUrl("att-1", "origin-a/bot-a/conversation-a"), "blob:kept");
+  assert.equal(sessionImageUrl("att-1", "origin-b/bot-a/conversation-a"), undefined);
   assert.deepEqual(revoked, []);
   rememberSessionImage("att-1", "blob:kept");
   const snapshot = { messages: [{ attachments: [persistableAttachment(queued[0]!)] }] };
   assert.equal(containsUnsafePayload(snapshot), false);
+  globalThis.URL = prev;
+  resetPreviewCaches();
+});
+
+test("task previews without a complete owner scope are revoked instead of shared", () => {
+  resetPreviewCaches();
+  const revoked: string[] = [];
+  const prev = globalThis.URL;
+  globalThis.URL = { revokeObjectURL: (url: string) => revoked.push(url) } as unknown as typeof URL;
+  transferQueueToSession([{ localId: "1", name: "cat.png", mime: "image/png", size: 20, status: "ready", previewUrl: "blob:task", attachment: { id: "same-id", name: "cat.png", mime: "image/png", size: 20 } }]);
+  assert.deepEqual(revoked, ["blob:task"]);
+  assert.equal(sessionImageUrl("same-id"), undefined);
   globalThis.URL = prev;
   resetPreviewCaches();
 });

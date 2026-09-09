@@ -2,6 +2,7 @@ import { hermesFetch } from "./hermes-fetch";
 import { canRegisterServiceWorker } from "./api-helper";
 import { vapidToBytes } from "./vapid";
 import { pushSubscribePayload } from "./push-payload";
+import { applicationServerKeyMatches } from "./push-key";
 
 export { pushSubscribePayload } from "./push-payload";
 
@@ -115,6 +116,23 @@ export function writePushId(origin: string, id: string): void {
   }
 }
 
+async function removeStalePushSubscription(
+  registration: ServiceWorkerRegistration,
+  origin: string,
+  apiKey: string,
+  expectedKey: Uint8Array,
+): Promise<PushSubscription | null> {
+  const existing = await registration.pushManager.getSubscription();
+  if (!existing || applicationServerKeyMatches(existing.options.applicationServerKey, expectedKey)) return existing;
+
+  // Chrome keeps the old subscription even after AIOT rotates its VAPID key.
+  // Remove both sides when possible, then let the browser enroll with the current key.
+  const enrolled = await postPushLookup(origin, apiKey, existing.endpoint).catch(() => null);
+  if (enrolled?.id) await postPushUnsubscribe(origin, apiKey, enrolled.id).catch(() => undefined);
+  await existing.unsubscribe();
+  return null;
+}
+
 export async function enableWebPush(origin: string, apiKey: string): Promise<{ id: string; sourceReady: boolean }> {
   if (!canRegisterServiceWorker()) {
     throw new Error("請在 AIOT 的 HTTPS 網址或已安裝的 PWA 開啟通知");
@@ -126,9 +144,11 @@ export async function enableWebPush(origin: string, apiKey: string): Promise<{ i
   if (!status.publicKey) throw new Error("AIOT 尚未提供通知金鑰");
   const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
-  const sub = await reg.pushManager.subscribe({
+  const applicationServerKey = vapidToBytes(status.publicKey);
+  const existing = await removeStalePushSubscription(reg, origin, apiKey, applicationServerKey);
+  const sub = existing ?? await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: vapidToBytes(status.publicKey) as BufferSource,
+    applicationServerKey: applicationServerKey as BufferSource,
   });
   const result = await postPushSubscribe(origin, apiKey, sub.toJSON());
   writePushId(origin, result.id);

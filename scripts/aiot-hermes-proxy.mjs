@@ -174,7 +174,7 @@ async function proxyRequest(req, res, targetUrl) {
       await pipeline(stream, res);
     }
     else res.end();
-  } catch (error) {
+  } catch {
     if (!res.headersSent && !res.destroyed) json(res, 502, { error: "proxy_failed" });
     else if (!res.destroyed) res.end();
   }

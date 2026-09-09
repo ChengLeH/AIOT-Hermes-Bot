@@ -25,7 +25,7 @@ export function sanitizeJob(j) {
         : null,
   };
 }
-export async function handleJobs({ req, incoming, ep, fetchImpl, readBody }) {
+export async function handleJobs({ req, incoming, ep, profile, fetchImpl, readBody }) {
   if (!ep) return { status: 404, value: { error: "jobs_unavailable" } };
   const match = incoming.pathname.match(
     /^\/api\/bot\/native\/jobs(?:\/([a-zA-Z0-9_-]{1,128})(?:\/(pause|resume|run))?)?$/,
@@ -58,7 +58,10 @@ export async function handleJobs({ req, incoming, ep, fetchImpl, readBody }) {
         name: input.name.trim(),
         prompt: input.prompt,
         schedule: input.schedule,
-        deliver: "local",
+        // Hermes 0.21.1+ routes this execution result back through the
+        // selected profile's canonical Bot Chat. The target is derived from
+        // the authenticated route, never accepted from browser input.
+        deliver: `bot-chat:${profile}`,
       };
     }
   } else if (!(method === "DELETE" && match[1] && !match[2]) && (method !== "GET" || match[1]))

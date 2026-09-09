@@ -1,11 +1,12 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { forwardRef, useEffect, useLayoutEffect, useId, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronUp, ListTodo, Search, Square, X } from "lucide-react";
 import { hermesFetch } from "@/lib/hermes-fetch";
 import { approvalDeadlineLabels, localizeNotice, localizeTaskNotice, taskStatusLabel, t, type Locale } from "@/lib/locale";
 import { CodeBlock, Markdown } from "@/lib/markdown";
 import { BotAvatar } from "./bot-avatar";
 import { BubbleCopy } from "./bubble-copy";
+import { TaskContextCard, type TaskContextSnapshot } from "./task-context-card";
 import { TaskManager } from "./task-manager";
 import { MessageAttachments, QueuePreview } from "./attachment-media";
 import type { AttachmentDescriptor } from "@/lib/attachment-rules";
@@ -56,10 +57,11 @@ function SessionPlan({ task, state, locale }: { task: WorkspaceTask; state: Sess
 }
 
 export type WorkspaceTask = {
-  id: string; title: string; status: string; turn?: number | string; summary?: string; mode?: "fork" | "independent"; contextCount?: number;
+  id: string; title: string; status: string; turn?: number | string; summary?: string; mode?: "fork" | "independent"; contextCount?: number; contextSnapshot?: TaskContextSnapshot;
   botId?: string; profile?: string; error?: string; todoState?: SessionTodoState;
   createdAt?: string | number; updatedAt?: string | number; terminalAt?: string; interruptRequested?: boolean;
   messages?: { id?: string; role: string; content?: string; text?: string; attachments?: AttachmentDescriptor[] }[];
+  queuedTurns?: { id: string; text: string; createdAt: string }[];
   pendingApproval?: { kind?: string; command?: string; description?: string; summary?: string; receivedAt?: string; timeoutSeconds?: number | null; expiresAt?: string | null; choices?: string[] };
 };
 type TaskCreateOptions = { mode: "fork" | "independent"; context: TaskContextMessage[] };
@@ -80,6 +82,8 @@ const attachmentErrors: Record<string, [string, string]> = {
   attachment_too_large: ["單一任務附件不能超過 10 MB，請縮小檔案後再傳送。", "Each task attachment must be no larger than 10 MB. Reduce the file size and try again."],
   attachment_unavailable: ["無法取得附件，請確認連線，或重新選取檔案。", "The attachment could not be retrieved. Check your connection or select the file again."],
   task_attachment_rejected: ["Hermes 尚未接收完整附件，因此沒有送出任務。附件已保留，可重試。", "Hermes did not accept all attachments, so the task was not sent. Your files are preserved for retry."],
+  task_queue_full: ["佇列已滿，請等待前面的訊息完成。", "The queue is full. Wait for an earlier message to finish."],
+  task_queued_attachments_unsupported: ["任務執行中只能先佇列文字；附件請在目前回合結束後傳送。", "While a task is running, only text can be queued. Send attachments after the current turn finishes."],
   unsupported_attachment_type: ["Hermes 不支援這個附件格式，請改用圖片或文件。", "Hermes does not support this attachment format. Use a supported image or document."],
 };
 
@@ -103,14 +107,15 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
   const [selected, setSelected] = useState<WorkspaceTask | null>(null);
   const matches = findMessageMatches((selected?.messages || []).map((message, index) => ({ id: String(index), content: message.content ?? message.text ?? "" })), findQuery);
   const matchIndex = matches.length ? findIndex % matches.length : 0;
+  const currentMatch = matches[matchIndex];
   useEffect(() => {
     setFindQuery(""); setFindIndex(0);
   }, [selected?.id]);
   useEffect(() => {
-    if (!finding || !matches.length) return;
+    if (!finding || currentMatch === undefined) return;
     followTail.current = false;
-    messageLog.current?.querySelector(`[data-task-message="${matches[matchIndex]}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [finding, findQuery, matchIndex, matches.join(",")]);
+    messageLog.current?.querySelector(`[data-task-message="${currentMatch}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [finding, currentMatch]);
   function closeFinding() {
     if (!findingRef.current) return;
     blurTextInput();
@@ -262,7 +267,7 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
     } else { panelRef.current = null; setPanel(null); }
     return true;
   }
-  async function request(route: string, body?: Record<string, unknown>, id?: string): Promise<Payload> {
+  const request = useCallback(async (route: string, body?: Record<string, unknown>, id?: string): Promise<Payload> => {
     const controller = new AbortController();
     controllers.current.add(controller);
     try {
@@ -287,7 +292,7 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
       if (!alive.current) throw new Error("Workspace changed");
       return data;
     } finally { controllers.current.delete(controller); }
-  }
+  }, [bot.id, bot.profile, connection.apiKey, connection.origin, localSetup]);
   function report(task: WorkspaceTask) {
     if (!["completed", "done"].includes(task.status)) return;
     const key = `${task.id}:${task.turn ?? 0}`;
@@ -325,6 +330,8 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
 
   useEffect(() => {
     alive.current = true;
+    const activeControllers = controllers.current;
+    const workspaceMarker = marker.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
@@ -359,10 +366,10 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
       returning.current = false;
       const state = window.history.state;
       if (findingRef.current && !state?.aiotTaskSearch) blurTextInput();
-      findingRef.current = state?.aiotTaskWorkspace === marker.current && !!state.aiotTaskSearch;
+      findingRef.current = state?.aiotTaskWorkspace === workspaceMarker && !!state.aiotTaskSearch;
       setFinding(findingRef.current);
       if (!findingRef.current) { setFindQuery(""); setFindIndex(0); }
-      let next: Panel = state?.aiotTaskWorkspace === marker.current && ["manager", "detail", "new", "login"].includes(state.aiotTaskPanel) ? state.aiotTaskPanel : null;
+      let next: Panel = state?.aiotTaskWorkspace === workspaceMarker && ["manager", "detail", "new", "login"].includes(state.aiotTaskPanel) ? state.aiotTaskPanel : null;
       if (next === "detail" && deletedTaskIds.current.has(state.aiotTaskId)) {
         next = "manager";
         window.history.replaceState({ ...state, aiotTaskPanel: "manager", aiotTaskId: null, aiotTaskReturn: null }, "");
@@ -382,14 +389,14 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
     window.addEventListener("popstate", pop);
     return () => {
       alive.current = false; clearTimeout(timer);
-      controllers.current.forEach((controller) => controller.abort());
+      activeControllers.forEach((controller) => controller.abort());
       window.removeEventListener("popstate", pop);
-      if (window.history.state?.aiotTaskWorkspace === marker.current) {
+      if (window.history.state?.aiotTaskWorkspace === workspaceMarker) {
         const state = { ...window.history.state }; delete state.aiotTaskWorkspace; delete state.aiotTaskPanel; delete state.aiotTaskId; delete state.aiotTaskReturn; delete state.aiotTaskSearch;
         window.history.replaceState(state, "");
       }
     };
-  }, []);
+  }, [request]);
 
   useEffect(() => {
     const openPendingTask = async () => {
@@ -408,7 +415,7 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
     const unsubscribe = subscribeTaskDeepLink(() => { void openPendingTask(); });
     void openPendingTask();
     return unsubscribe;
-  }, [authenticated, bot.id, bot.profile, bot.conversation]);
+  }, [authenticated, bot.id, bot.profile, bot.conversation, request]);
 
   async function login() {
     if (!localSetup || busyRef.current) return;
@@ -547,7 +554,7 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
           onCloseAutoFocus={(event) => { event.preventDefault(); if (focusReturn.current?.isConnected && !focusReturn.current.matches("input, textarea, [contenteditable='true']")) focusReturn.current.focus({ preventScroll: true }); }}>
           <header className="chat-divider-bottom flex items-center gap-2 border-b border-border px-3 py-2">
             <BotAvatar profile={bot.profile} swatch={bot.swatch} size={38} />
-            <div className="min-w-0 flex-1"><Dialog.Title className="truncate text-sm font-semibold">{title}</Dialog.Title><Dialog.Description className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted"><span>{bot.name}</span><span className="task-context-badge">{selected?.mode === "fork" && inDetail ? (en ? `Fork · ${selected.contextCount || 0} messages` : `分岔任務 · ${selected.contextCount || 0} 則脈絡`) : (en ? "Independent task" : "獨立任務")}</span></Dialog.Description></div>
+            <div className="min-w-0 flex-1"><Dialog.Title className="truncate text-sm font-semibold">{title}</Dialog.Title><Dialog.Description className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted"><span>{bot.name}</span></Dialog.Description></div>
             {authenticated && <button className={`${headerButton}${managerOverDetail ? " icon-toggle-active" : ""}`} aria-pressed={managerOverDetail} aria-label={en ? "Tasks" : "任務管理"} onClick={() => show("manager")}><ListTodo className="size-4" strokeWidth={1.8} /></button>}
             {inDetail && <button className={`${headerButton}${finding ? " icon-toggle-active text-accent" : " text-fg"}`} aria-label={t(locale, "chat.find")} aria-pressed={finding} onClick={toggleFinding}><Search className="size-4" strokeWidth={1.8} /></button>}
             <button className={headerButton} aria-label={en ? "Close" : "關閉"} onClick={close}><X className="size-4" strokeWidth={1.8} /></button>
@@ -578,12 +585,13 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
                 if ((!text && !message.attachments?.length) || !["user", "assistant"].includes(message.role)) return null;
                 return <div data-task-message={index} key={message.id || index} className={`flex items-start gap-2 ${message.role === "user" ? "justify-end" : ""}`}>
                   {message.role === "assistant" && <BotAvatar profile={bot.profile} swatch={bot.swatch} size={28} />}
-                  <div className={`relative min-w-0 max-w-[88%] rounded-2xl pl-4 pr-10 py-3 text-sm ${message.role === "user" ? "bg-user-bubble" : "bg-bg-elevated"}`}><Markdown query={finding ? findQuery : ""} text={text} locale={locale} />{!!message.attachments?.length && <div className="mt-2"><MessageAttachments attachments={message.attachments} origin={connection.origin} apiKey={connection.apiKey} locale={locale} align={message.role === "user" ? "end" : "start"} /></div>}<BubbleCopy text={text} locale={locale} /></div>
+                  <div className={`relative min-w-0 max-w-[88%] rounded-2xl pl-4 pr-10 py-3 text-sm ${message.role === "user" ? "bg-user-bubble" : "bg-bg-elevated"}`}><Markdown query={finding ? findQuery : ""} text={text} locale={locale} />{!!message.attachments?.length && <div className="mt-2"><MessageAttachments attachments={message.attachments} origin={connection.origin} apiKey={connection.apiKey} locale={locale} align={message.role === "user" ? "end" : "start"} session={{ botId: bot.id, profile: bot.profile }} /></div>}<BubbleCopy text={text} locale={locale} /></div>
                 </div>;
               })}
             </div>
             {inDetail && awayFromLatest && <button type="button" className="jump-latest" style={{ bottom: 12 }} aria-label={t(locale, "chat.jumpLatest")} onClick={jumpTaskLatest}><ChevronDown className="size-5" /></button>}
             </div>
+            {inDetail && selected?.queuedTurns?.length ? <details className="mx-4 mb-2 rounded-xl border border-border bg-bg-elevated/80 px-3 py-2"><summary className="cursor-pointer text-xs text-muted">{en ? `Queue (${selected.queuedTurns.length})` : `佇列（${selected.queuedTurns.length}）`}</summary><ol className="mt-2 space-y-2">{selected.queuedTurns.map((item,index)=><li key={item.id} className="flex gap-2 text-xs"><span className="text-subtle">{index+1}</span><span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{item.text}</span></li>)}</ol></details> : null}
             {inDetail && selected?.pendingApproval?.kind === "approval" ? <div className="space-y-2 border-t border-border p-4"><p className="text-sm">{en ? "This task needs approval." : "此任務需要你的批准。"}</p>{selected.pendingApproval.description || selected.pendingApproval.summary ? <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all text-sm text-muted">{localizeTaskNotice(locale, selected.pendingApproval.description || selected.pendingApproval.summary)}</p> : null}{selected.pendingApproval.command ? <>{localizeTaskNotice(locale, selected.pendingApproval.command) !== selected.pendingApproval.command ? <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all text-sm text-muted">{localizeTaskNotice(locale, selected.pendingApproval.command)}</p> : null}<div className="max-h-52 overflow-y-auto [&_.md-code]:m-0 [&_pre]:whitespace-pre-wrap [&_pre]:break-all [&_code]:font-mono [&_code]:text-xs"><CodeBlock text={selected.pendingApproval.command} lang="text" label={en ? "Original operation" : "原始操作內容"} locale={locale} /></div></> : null}{selected.pendingApproval.receivedAt && Number.isFinite(Date.parse(selected.pendingApproval.receivedAt)) ? <p className="text-xs text-muted">{en ? "Received: " : "收到時間："}{new Date(selected.pendingApproval.receivedAt).toLocaleString(en ? "en" : "zh-TW")}</p> : null}{approvalDeadlineLabels(locale, selected.pendingApproval).map((label) => <p key={label} className="text-xs text-muted">{label}</p>)}<div className="flex gap-2"><button className={`${button.replace("hover:bg-bg-hover", "hover:bg-[#829d90]")} bg-[#718d80] text-[#edf2ee]`} disabled={busy || (!!selected.pendingApproval.choices?.length && !selected.pendingApproval.choices.includes("once"))} onClick={() => void taskAction("approval", { decision: "once" })}>{en ? "Allow once" : "允許一次"}</button><button className={`${button} stop-btn`} disabled={busy || (!!selected.pendingApproval.choices?.length && !selected.pendingApproval.choices.includes("deny"))} onClick={() => void taskAction("approval", { decision: "deny" })}>{en ? "Deny" : "拒絕"}</button></div></div> : null}
             {selected?.pendingApproval?.kind === "clarify" && <p role="status" className="px-4 py-3 text-sm whitespace-pre-wrap">{localizeTaskNotice(locale, selected.pendingApproval.summary) || (en ? "Please answer the question to continue." : "請回答問題以繼續。")}</p>}
             {inDetail && selected?.todoState?.todos?.length ? <SessionPlan key={selected.id} task={selected} state={selected.todoState} locale={locale} /> : null}
@@ -593,7 +601,7 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
               {!!queuedFiles.length && <ul className="flex flex-wrap gap-1.5">{queuedFiles.map((item) => <QueuePreview key={item.localId} item={{ ...item, error: localizeNotice(locale, item.error) }} locale={locale} onRemove={() => { if (submitLock.current) return; revokeQueuedPreview(item); updateQueue(composerScope.current, (items) => items.filter((entry) => entry.localId !== item.localId)); }} />)}</ul>}
               <textarea autoComplete="off" ref={taskTextarea} disabled={busy || waitingUploads || (inDetail && taskMissing)} aria-label={en ? "Task message" : "任務訊息"} placeholder={en ? "Write a task message…" : "輸入任務訊息…"} rows={1} className="block max-h-40 w-full resize-none overflow-y-auto rounded-xl border border-border bg-bg-elevated p-3 text-sm outline-none focus:border-border-strong" value={draft} onChange={(event) => setDraft(event.target.value)} />
               <input ref={taskFileInput} type="file" hidden multiple accept="image/*,.pdf,.txt,.md,.doc,.docx" onChange={(event) => { pickTaskFiles(event.target.files); event.target.value = ""; }} />
-              <div className="flex justify-end gap-2"><ComposerAttachmentButton className="mr-auto" disabled={busy || waitingUploads || (inDetail && taskMissing) || queuedFiles.length >= MAX_ATTACHMENTS || (inDetail && selected?.status === "waiting_input")} aria-label={en ? "Attach files" : "附加檔案"} onClick={() => taskFileInput.current?.click()} />{inDetail && active && <button type="button" className="grid size-11 shrink-0 place-items-center rounded-full disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent" disabled={busy || selected?.interruptRequested || stoppingTaskId === selected?.id} aria-label={selected?.interruptRequested || stoppingTaskId === selected?.id ? (en ? "Stopping task" : "正在停止任務") : (en ? "Stop task" : "停止任務")} onClick={() => void taskAction("interrupt")}><span className="stop-btn grid size-7 place-items-center rounded-full"><Square size={12} fill="currentColor" aria-hidden="true" /></span></button>}<ComposerSendButton loading={waitingUploads} disabled={busy || waitingUploads || (inDetail && taskMissing) || (!draft.trim() && !queuedFiles.length) || (inDetail && (!selected || (active && selected.status !== "waiting_input")))} aria-label={waitingUploads ? (en ? "Waiting for uploads" : "等待附件上傳完成") : (en ? "Send" : "傳送")} /></div>
+              <div className="task-composer-actions flex items-center gap-2"><ComposerAttachmentButton disabled={busy || waitingUploads || (inDetail && (taskMissing || active)) || queuedFiles.length >= MAX_ATTACHMENTS} aria-label={en ? "Attach files" : "附加檔案"} onClick={() => taskFileInput.current?.click()} /><div className="task-context-slot">{selected?.mode === "fork" && inDetail ? <TaskContextCard key={selected.id} count={selected.contextCount || 0} snapshot={selected.contextSnapshot} locale={locale} name={bot.name} profile={bot.profile} swatch={bot.swatch} /> : <span className="task-context-badge">{en ? "Independent task" : "獨立任務"}</span>}</div>{inDetail && active && !draft.trim() && !queuedFiles.length ? <button type="button" className="stop-btn grid size-11 min-h-[44px] min-w-[44px] shrink-0 place-items-center rounded-xl disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent" disabled={busy || selected?.interruptRequested || stoppingTaskId === selected?.id} aria-label={selected?.interruptRequested || stoppingTaskId === selected?.id ? (en ? "Stopping task" : "正在停止任務") : (en ? "Stop task" : "停止任務")} onClick={() => void taskAction("interrupt")}><Square className="size-3.5 fill-current" aria-hidden="true" /></button> : <ComposerSendButton loading={waitingUploads} disabled={busy || waitingUploads || (inDetail && taskMissing) || (!draft.trim() && !queuedFiles.length) || (inDetail && !selected) || (inDetail && active && queuedFiles.length > 0)} aria-label={waitingUploads ? (en ? "Waiting for uploads" : "等待附件上傳完成") : (en ? "Send" : "傳送")} />}</div>
             </form>
           </>}
         </Dialog.Content>

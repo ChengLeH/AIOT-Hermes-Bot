@@ -92,7 +92,17 @@ function pending(payload, kind, receivedAt) {
     requestId: typeof payload?.request_id === 'string' ? payload.request_id : '',
     choices: kind === 'clarify' ? (cleanChoices(payload?.choices).length ? cleanChoices(payload.choices) : questions[0]?.choices || []) : Array.isArray(payload?.choices) ? payload.choices.filter(x => ['once', 'session', 'always', 'deny'].includes(x)) : [] };
 }
-function publicTask(task, detail = true) {
+function originalContextSnapshot(task) {
+  // Only an actual saved creation snapshot is evidence of what was supplied.
+  // Legacy messages contain the user's caption, not the submitted wrapped prompt.
+  if (task.mode !== 'fork' || !Array.isArray(task.context)) return { available: false };
+  try {
+    const { context } = createContext({ mode: 'fork', context: task.context });
+    if (task.contextCount !== undefined && task.contextCount !== context.length) return { available: false };
+    return { available: true, messages: context };
+  } catch { return { available: false }; }
+}
+function publicTask(task, detail = true, includeContext = false) {
   const value = {};
   for (const key of ['id', 'botId', 'profile', 'parentConversation', 'title', 'mode', 'contextCount', 'status', 'createdAt', 'updatedAt', 'terminalAt', 'turn', 'completedTurn', 'error', 'interruptRequested']) {
     if (task[key] !== undefined) value[key] = task[key];
@@ -101,13 +111,15 @@ function publicTask(task, detail = true) {
   value.contextCount ??= 0;
   if (task.pending) value.pendingApproval = copy(task.pending);
   if (task.todoState) value.todoState = copy(task.todoState);
+  if (task.queuedTurns?.length) value.queuedTurns = task.queuedTurns.map(item => ({ id:item.id, text:item.text, createdAt:item.createdAt }));
   if (detail) value.messages = copy(task.messages || []);
+  if (includeContext) value.contextSnapshot = originalContextSnapshot(task);
   return value;
 }
 
 /** AIOT-owned sessions only. Persistence must be encrypted by the embedding server. */
 export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }), writeState = () => {},
-  onCompleted = () => {}, onApprovalRequested = () => {}, now = () => new Date().toISOString(), id = randomUUID } = {}) {
+  onCompleted = () => {}, onApprovalRequested = () => {}, loadArtifacts = async () => [], now = () => new Date().toISOString(), id = randomUUID } = {}) {
   if (typeof getClient !== 'function') throw failure('task_rpc_unavailable', 503);
   let state;
   let persistence = Promise.resolve();
@@ -200,6 +212,36 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
     task.todoState = { revision: raw.revision, todos, updatedAt: now() };
     return true;
   }
+  async function scanArtifacts(task) {
+    if (task.artifactScanTurn === task.turn || task.status !== 'completed') return;
+    const rows = await loadArtifacts(copy(task));
+    if (!Array.isArray(rows)) throw failure('invalid_task_artifacts', 502);
+    task.artifacts ||= [];
+    const known = new Set(task.artifacts.map(item => item.path));
+    const added = [];
+    for (const row of rows.slice(0, 50)) {
+      if (!row || typeof row.path !== 'string' || !row.path || row.path.length > 4096 || hasControlCharacter(row.path) ||
+          typeof row.name !== 'string' || !row.name || row.name.length > 240 || /[/\\]/.test(row.name) ||
+          typeof row.mime !== 'string' || !row.mime || known.has(row.path)) continue;
+      const entry = { id: id(), path: row.path, name: row.name, mime: row.mime, size: Number.isFinite(row.size) && row.size > 0 ? row.size : 0, turn: task.turn };
+      task.artifacts.push(entry); known.add(entry.path); added.push(entry);
+    }
+    if (added.length) {
+      let message = task.messages.findLast(item => item.role === 'assistant' && item.turn === task.turn);
+      if (!message) { message = { id: id(), role: 'assistant', text: '', createdAt: now(), turn: task.turn }; task.messages.push(message); }
+      message.attachments = [...(message.attachments || []), ...added.map(item => ({ id:item.id, name:item.name, mime:item.mime, size:item.size, source:'session', taskId:task.id }))];
+    }
+    task.artifactScanTurn = task.turn;
+  }
+  async function dispatchNext(task) {
+    const queued=task.queuedTurns?.[0];
+    if(!queued||ACTIVE.has(task.status)||task.upstreamMissing||task.deletion)return;
+    const client=await attach(task);
+    const receipt={id:queued.id,fingerprint:queued.fingerprint,turn:(task.turn||0)+1};
+    task.replyRequests ||= [];
+    task.replyRequests.push(receipt);
+    return submit(task,queued.text,client,{requestReceipt:receipt,queuedItem:queued});
+  }
   async function settle(task, text, status) {
     if (task.completedTurn === task.turn) return;
     if (text) task.messages.push({ id: id(), role: 'assistant', text, createdAt: now(), turn: task.turn });
@@ -210,12 +252,17 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
     task.completedTurn = task.turn;
     task.updatedAt = now();
     task.terminalAt ??= task.updatedAt;
+    if (status === 'completed') { try { await scanArtifacts(task); } catch { /* Detail polling retries without blocking completion. */ } }
     if (status === 'completed' && task.notifiedTurn !== task.turn) {
       task.pendingCompletions ||= [];
       if (!task.pendingCompletions.some(receipt => receipt.turn === task.turn)) task.pendingCompletions.push({ ...publicTask(task), owner: task.owner, completionKey: `${task.id}:${task.turn}` });
     }
     await save();
     await deliverCompletions(task);
+    if(task.queuedTurns?.length) {
+      try { await dispatchNext(task); }
+      catch { if(!ACTIVE.has(task.status)){task.error='task_queue_paused';await save().catch(()=>{});} }
+    }
   }
   function reconcileHistory(task, result) {
     if (result.running !== false || result.inflight || result.queued || !Array.isArray(result.messages) || task.interruptRequested) return null;
@@ -288,7 +335,7 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
     await deliverApproval(task);
     return client;
   }
-  async function submit(task, text, client, { attachments = [], refs = [], promptText = text, requestReceipt = null, stagedImagePaths = [] } = {}) {
+  async function submit(task, text, client, { attachments = [], refs = [], promptText = text, requestReceipt = null, stagedImagePaths = [], queuedItem = null } = {}) {
     if (ACTIVE.has(task.status)) throw failure('task_turn_unsettled', 409);
     const beforeSubmit = copy(task);
     delete task.createPending;
@@ -300,6 +347,10 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
     clearPending(task);
     task.buffer = '';
     task.updatedAt = now();
+    if(queuedItem) {
+      task.queuedTurns=(task.queuedTurns||[]).filter(item=>item!==queuedItem);
+      if(!task.queuedTurns.length)delete task.queuedTurns;
+    }
     task.messages.push({ id: id(), role: 'user', text, createdAt: task.updatedAt, turn: task.turn,
       ...(attachments.length ? { attachments: attachments.map(({ id, name, mime, size }) => ({ id, name, mime, size })) } : {}) });
     try { await save(); } catch (error) {
@@ -412,8 +463,15 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
         if (!task.upstreamMissing && (!task.attached || ACTIVE.has(task.status))) {
           try { await attach(task); } catch { if (!task.upstreamMissing) task.error = 'task_reconnect_failed'; await save(); }
         }
-        return publicTask(task);
+        if (task.status === 'completed' && task.artifactScanTurn !== task.turn) { try { await scanArtifacts(task); await save(); } catch { /* Keep text result available. */ } }
+        return publicTask(task, true, true);
       });
+    },
+    artifact({ owner, id: taskId, artifactId, botId, profile }) {
+      const task = owned(owner, taskId, { botId, profile });
+      const artifact = task.artifacts?.find(item => item.id === artifactId);
+      if (!artifact) throw failure('task_artifact_not_found', 404);
+      return copy({ taskId:task.id, sessionId:task.storedSessionId, profile:task.profile, ...artifact });
     },
     async create(input) {
       const text = inputText(input);
@@ -455,7 +513,7 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
         }
         const timestamp = now();
         const task = { id: id(), owner, botId, profile, parentConversation, title, mode, contextCount: context.length,
-          ...(context.length ? { context } : {}), status: 'ready', createPending: true,
+          ...(mode === 'fork' ? { context } : {}), status: 'ready', createPending: true,
           ...(requestId ? { createRequestId: requestId, createRequestFingerprint: requestFingerprint } : {}),
           sessionId: result.session_id, storedSessionId: result.stored_session_id, attached: true,
           createdAt: timestamp, updatedAt: timestamp, turn: 0, completedTurn: 0, messages: [] };
@@ -486,6 +544,11 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
       const fingerprint = createHash('sha256').update(JSON.stringify({ text, attachments: attachments.map(file => ({ id: file.id, name: file.name, mime: file.mime, hash: createHash('sha256').update(file.bytes).digest('hex') })) })).digest('hex');
       return locked(input.id, async () => {
         const task = owned(input.owner, input.id, input);
+        const queued = requestId && task.queuedTurns?.find(request => request.id === requestId);
+        if (queued) {
+          if (queued.fingerprint !== fingerprint) throw failure('task_request_conflict', 409);
+          return publicTask(task);
+        }
         const previous = requestId && task.replyRequests?.find(request => request.id === requestId);
         if (previous) {
           if (previous.fingerprint !== fingerprint) throw failure('task_request_conflict', 409);
@@ -495,7 +558,14 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
           return publicTask(task);
         }
         const client = await attach(task);
-        if (ACTIVE.has(task.status)) throw failure('task_turn_unsettled', 409);
+        if (ACTIVE.has(task.status)) {
+          if(!requestId)throw failure('task_turn_unsettled',409);
+          if(attachments.length)throw failure('task_queued_attachments_unsupported',409);
+          task.queuedTurns ||= [];
+          if(task.queuedTurns.length>=20)throw failure('task_queue_full',409);
+          task.queuedTurns.push({id:requestId,fingerprint,text,createdAt:now()});
+          task.updatedAt=now();await save();return publicTask(task);
+        }
         const oldStatus = task.status;
         const oldError = task.error;
         const receipt = requestId ? { id: requestId, fingerprint, turn: (task.turn || 0) + 1 } : null;

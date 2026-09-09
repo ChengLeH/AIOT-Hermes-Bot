@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.1
+
+### English
+
+- Queue text turns in FIFO order while a Bot or Session is working. The existing 44 px action button becomes Stop when the composer is empty and Send when text is present; queued attachments remain blocked until the active turn settles.
+- Discover downloadable files and images from trusted official Session tool results. AIOT serves them through an authenticated, owner/task/profile-bound endpoint with strict type, size, signature and redirect checks; host paths never become client links.
+- Scope in-memory attachment previews to their connection, Bot, conversation or Session task so equal attachment IDs cannot reuse another scope's object URL.
+- Wrap completed Session results as untrusted JSON reference data before native parent-Bot context injection. Document the new task ownership scope created when a connection key or target changes.
+- Encrypt browser and host task/run/push state with AES-256-GCM, retain fail-closed migrations, and keep foreground notification state out of system push delivery.
+- Replace the old template dependency set with the small runtime set actually used by AIOT. `npm test` now runs both frontend and backend suites, CI uses that same command, and lint treats warnings as failures.
+- Add one-step macOS, Linux and Windows start/stop launchers. Dashboard sign-in is deferred until the first Session task; ordinary Bot chat keeps the existing URL-and-key setup.
+- Recover Chrome Push subscriptions automatically after the server notification key changes, instead of requiring users to clear browser data.
+- Mark the parent Bot with the existing blue unread badge when an independent or forked Session finishes.
+- Route newly created scheduled-job results through Hermes 0.21.1's official canonical Bot Chat delivery, so the selected Bot receives the result. Delete directly from the compact schedule panel; an active job is paused successfully before its real Hermes Job record is deleted.
+- Refine background themes, task controls, seven-message context presentation, timestamps, mobile viewport behavior and disabled pull-to-refresh. Scheduled jobs now use the same simple, immediate accordion behavior as the queue, without the previous cloned-card animation.
+
+Validation for the release candidate includes the full local test/type/lint/build suite plus Android PWA checks for a real Session FIFO turn pair and a real generated-file download. iPhone download-return layout recovery is deferred to the next version. Windows remains unverified; the published Linux flow is validated after release on a separate machine.
+
+### 繁體中文
+
+- Bot 或 Session 工作時可把純文字回合依 FIFO 排入佇列。原本 44 px 操作鍵在輸入框空白時是停止鍵，有文字時切為傳送鍵；執行中的附件仍須等目前回合結束。
+- 從 Hermes 官方 Session 的可信工具結果辨識圖片與檔案，透過具驗證、綁定 owner／任務／profile 的端點提供下載，並限制格式、大小、檔案簽章與重新導向；主機路徑不會直接暴露成手機連結。
+- 附件預覽快取依連線、Bot、對話或 Session 任務隔離，避免不同範圍碰巧使用相同附件 ID 時誤用另一個 object URL。
+- Session 完成結果先包成不可信 JSON 參考資料，再帶入原生父 Bot 上下文；文件也說明更換連線金鑰或目的地會建立新的任務 ownership scope。
+- 瀏覽器及主機的任務、Run、推播狀態使用 AES-256-GCM；遷移維持失敗即鎖定，App 在前景時不發系統推播。
+- 移除舊模板的大量未使用依賴，只保留 AIOT 實際使用的套件。`npm test` 同時執行前後端，CI 使用同一條命令，lint 不允許警告。
+- 新增 macOS、Linux、Windows 一步啟動／停止程式；一般 Bot 聊天仍只需網址與金鑰，第一次建立 Session 任務時才要求 Dashboard 登入。
+- 通知伺服器金鑰更換後，Chrome 會自動清理舊 Push 訂閱並重新註冊，不需使用者手動清除瀏覽器資料。
+- 獨立或 Fork Session 完成時，父 Bot 會顯示既有的灰藍色未讀標籤。
+- 新建排程會透過 Hermes 0.21.1 官方 canonical Bot Chat 投遞，把結果送回指定 Bot。排程面板可直接刪除真正的 Hermes Job；若仍在執行，會先確認暫停成功再刪除。
+- 調整背景主題、任務控制、七則脈絡卡、時間顯示、手機 viewport，並停用 PWA 下拉重新整理。排程工作改用和佇列一致的快速收合，不再複製卡片播放多餘動畫。
+
+候選版已完成全部本機測試、型別、零警告 lint 與正式建置，並在 Android PWA 以真實 Session 驗證兩回合 FIFO 及生成檔案下載。iPhone 關閉下載預覽後的版面恢復留到下一版；Windows 尚未實測，Linux 會在發布後由另一台電腦照公開流程驗證。
+
 ## 0.2.0
 
 ## English

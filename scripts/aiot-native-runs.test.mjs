@@ -78,7 +78,7 @@ test("official Hermes runs stay behind the browser Bot key and keep API_SERVER_K
     assert.equal(skills.status, 200);
     assert.deepEqual(skills.body.items.map((item) => item.insert), ["/h3-prompt"]);
 
-    const started = await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "bot-chat", text: "hello" });
+    const started = await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "bot-chat", text: "hello", requestId: "11111111-1111-4111-8111-111111111111" });
     assert.equal(started.status, 202);
     assert.equal(started.body.run_id, "run-one");
     assert.deepEqual(resultContextCalls, [["http://bot.local/api/bot", "Bearer browser-key", "demo", "bot-chat"]]);
@@ -115,7 +115,59 @@ test("missing or unsupported official API fails closed without breaking legacy B
     const features = await call(service, "GET", "/api/bot/native/capabilities?profile=demo");
     assert.equal(features.status, 404);
     assert.equal(features.body.available, false);
-    assert.equal((await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "c", text: "hi" })).status, 409);
+    assert.equal((await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "c", text: "hi", requestId: "22222222-2222-4222-8222-222222222222" })).status, 409);
+  } finally {
+    service.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("active Bot turns queue in FIFO order and duplicate requests never submit twice", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aiot-native-queue-"));
+  const profile = join(root, "profiles", "demo");
+  mkdirSync(profile, { recursive: true });
+  writeFileSync(join(profile, ".env"), "API_SERVER_KEY=official-secret-key\nAPI_SERVER_PORT=9864\n");
+  let firstEvents;
+  const submissions = [];
+  const fetchImpl = async (url, options = {}) => {
+    const target = String(url);
+    if (target === "http://bot.local/api/bot/profiles") return Response.json({ profiles: [{ name: "demo", available: true }] });
+    if (target.endsWith("/v1/capabilities")) return Response.json({ features: { run_submission: true, run_events_sse: true } });
+    if (target.includes("/api/sessions/chat/messages")) return Response.json({ data: [] });
+    if (target.endsWith("/v1/runs") && options.method === "POST") {
+      const body = JSON.parse(options.body);
+      submissions.push({ input: body.input, idempotency: options.headers["Idempotency-Key"] });
+      return Response.json({ run_id: body.input === "first" ? "run-first" : "run-second" }, { status: 202 });
+    }
+    if (target.endsWith("/v1/runs/run-first/events")) {
+      return new Response(new ReadableStream({ start(controller) { firstEvents = controller; } }), { headers: { "content-type": "text/event-stream" } });
+    }
+    if (target.endsWith("/v1/runs/run-second/events")) {
+      return new Response(`data: ${JSON.stringify({ event: "run.completed", output: "second done" })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  const service = createNativeRunsService({ dataDir: join(root, "state"), hermesHome: root, fetchImpl });
+  const firstId = "33333333-3333-4333-8333-333333333333";
+  const secondId = "44444444-4444-4444-8444-444444444444";
+  try {
+    const first = await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "chat", text: "first", requestId: firstId });
+    assert.equal(first.body.run_id, "run-first");
+    const queued = await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "chat", text: "second", requestId: secondId });
+    assert.equal(queued.body.queue_id, secondId);
+    const duplicate = await call(service, "POST", "/api/bot/native/runs", { profile: "demo", conversation: "chat", text: "second", requestId: secondId });
+    assert.equal(duplicate.body.queue_id, secondId);
+    assert.deepEqual((await call(service, "GET", "/api/bot/native/queue?profile=demo&conversation=chat")).body.items.map((item) => item.text), ["second"]);
+    assert.deepEqual(submissions.map((item) => item.input), ["first"]);
+
+    firstEvents.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ event: "run.completed", output: "first done" })}\n\n`));
+    firstEvents.close();
+    await service.settled("run-first");
+    for (let attempt = 0; submissions.length < 2 && attempt < 20; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(submissions.map((item) => item.input), ["first", "second"]);
+    assert.equal(new Set(submissions.map((item) => item.idempotency)).size, 2);
+    await service.settled("run-second");
+    assert.deepEqual((await call(service, "GET", "/api/bot/native/queue?profile=demo&conversation=chat")).body.items, []);
   } finally {
     service.close();
     rmSync(root, { recursive: true, force: true });

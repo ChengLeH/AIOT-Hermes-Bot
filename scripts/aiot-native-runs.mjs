@@ -97,10 +97,10 @@ export function createNativeRunsService({
   const root = dataDir || join(process.cwd(), ".aiot");
   const privateState = createPrivateStateCipher({ dataDir: root, fileName: "native-runs.json" });
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  let state = { nextSeq: 1, runs: {}, events: [] };
+  let state = { nextSeq: 1, runs: {}, events: [], queues: {} };
   {
     const saved = privateState.read(() => null);
-    if (saved && typeof saved === "object") state = { nextSeq: Number(saved.nextSeq) || 1, runs: saved.runs && typeof saved.runs === "object" ? saved.runs : {}, events: Array.isArray(saved.events) ? saved.events : [] };
+    if (saved && typeof saved === "object") state = { nextSeq: Number(saved.nextSeq) || 1, runs: saved.runs && typeof saved.runs === "object" ? saved.runs : {}, events: Array.isArray(saved.events) ? saved.events : [], queues: saved.queues && typeof saved.queues === "object" ? saved.queues : {} };
   }
   // Old snapshots did not date chat events. Recover their source run time,
   // never the time the proxy restarts or the browser replays them.
@@ -114,6 +114,8 @@ export function createNativeRunsService({
   const tasks = new Map();
   const endpoints = new Map();
   const authCache = new Map();
+  const deliveryScopes = new Map();
+  const queueLocks = new Map();
   let closed = false;
 
   function cacheAuthorization(key, value) {
@@ -217,6 +219,34 @@ export function createNativeRunsService({
       (!requestId || run.approvalRequestId === requestId),
     ).sort((a, b) => b.createdAt - a.createdAt)[0] || null;
   }
+  const queueKey=(profile,conversation)=>`${profile}\n${conversation}`;
+  const activeRun=(profile,conversation)=>Object.values(state.runs).find(run=>run.profile===profile&&run.conversation===conversation&&!TERMINAL.has(run.status));
+  async function drainQueue(key) {
+    if(queueLocks.has(key))return queueLocks.get(key);
+    const pending=(async()=>{
+      const item=state.queues[key]?.[0];const scope=deliveryScopes.get(key);
+      if(!item||item.status==='paused'||!scope||activeRun(item.profile,item.conversation))return;
+      const ep=await endpoint(item.profile);
+      if(!ep?.capabilities.run_submission||!ep.capabilities.run_events_sse)return;
+      item.status='dispatching';item.idempotency ||= randomUUID();delete item.error;save();
+      let conversationHistory;
+      try { conversationHistory=await loadRunContext(fetchImpl,ep,item.conversation); }
+      catch(error){item.status='paused';item.error=error.message==='context_too_large'?'context_too_large':'context_unavailable';save();return;}
+      try { const references=await loadTaskResultContext(scope.botTarget,scope.authorization,item.profile,item.conversation);if(Array.isArray(references))conversationHistory.push(...references.filter(message=>message?.role==='assistant'&&typeof message.content==='string')); } catch {
+        // A failed optional result-memory lookup must not block the queued turn.
+      }
+      try {
+        const headers={...ep.headers,'Content-Type':'application/json','Idempotency-Key':item.idempotency,'X-Hermes-Session-Key':`aiot:${item.profile}:${item.conversation}`};
+        const response=await fetchImpl(`${ep.base}/v1/runs`,{method:'POST',headers,body:JSON.stringify({input:item.text,session_id:item.conversation,conversation_history:conversationHistory}),redirect:'error'});
+        const value=await response.json().catch(()=>({}));
+        if(!response.ok||!ID_RE.test(String(value.run_id||''))){item.status='paused';item.error='run_not_accepted';save();return;}
+        state.queues[key].shift();if(!state.queues[key].length)delete state.queues[key];
+        const run={runId:value.run_id,requestId:item.id,profile:item.profile,conversation:item.conversation,status:'started',output:'',published:'',createdAt:Date.now()};
+        state.runs[run.runId]=run;append(run.profile,run.conversation,run.runId,'user_message',{message_id:`native-user-${run.runId}`,text:item.text});append(run.profile,run.conversation,run.runId,'turn_start',{});launch(run,ep);
+      } catch { item.status='dispatching';save(); }
+    })().finally(()=>queueLocks.delete(key));
+    queueLocks.set(key,pending);return pending;
+  }
 
   function translate(run, event) {
     const name = String(event?.event || "");
@@ -250,6 +280,7 @@ export function createNativeRunsService({
       run.published = output;
       run.status = name.slice(4);
       append(run.profile, run.conversation, run.runId, "turn_complete", { outcome });
+      queueMicrotask(()=>void drainQueue(queueKey(run.profile,run.conversation)));
     }
     save();
   }
@@ -360,7 +391,7 @@ export function createNativeRunsService({
       const profile = incoming.searchParams.get("profile") || "";
       if (!PROFILE_RE.test(profile)) return json(res, 400, { error: "invalid_profile" });
       try {
-        const result = await handleJobs({ req, incoming, ep: await endpoint(profile), fetchImpl, readBody: bodyJson });
+        const result = await handleJobs({ req, incoming, ep: await endpoint(profile), profile, fetchImpl, readBody: bodyJson });
         return json(res, result.status, result.value);
       } catch { return json(res, 400, { error: "invalid_request" }); }
     }
@@ -401,27 +432,29 @@ export function createNativeRunsService({
       const profile = typeof input.profile === "string" ? input.profile : "";
       const conversation = typeof input.conversation === "string" ? input.conversation.trim() : "";
       const text = typeof input.text === "string" ? input.text.trim() : "";
-      if (!PROFILE_RE.test(profile) || !conversation || !text || Object.keys(input).some((key) => !["profile", "conversation", "text"].includes(key))) return json(res, 400, { error: "invalid_request" });
+      const requestId=typeof input.requestId==='string'?input.requestId:'';
+      if (!PROFILE_RE.test(profile) || !conversation || !text || !/^[a-f0-9-]{36}$/i.test(requestId) || Object.keys(input).some((key) => !["profile", "conversation", "text", "requestId"].includes(key))) return json(res, 400, { error: "invalid_request" });
       const ep = await endpoint(profile);
       if (!ep?.capabilities.run_submission || !ep.capabilities.run_events_sse) return json(res, 409, { error: "native_runs_unavailable" });
-      let conversationHistory;
-      try { conversationHistory = await loadRunContext(fetchImpl, ep, conversation); }
-      catch (error) { return json(res, 409, { error: error.message === "context_too_large" ? "context_too_large" : "context_unavailable" }); }
-      try {
-        const references = await loadTaskResultContext(botTarget, req.headers.authorization, profile, conversation);
-        if (Array.isArray(references)) conversationHistory.push(...references.filter(message => message?.role === "assistant" && typeof message.content === "string"));
-      } catch { /* Task result memory is optional and server-only; omit private callback failures. */ }
-      const idempotency = randomUUID();
-      const headers = { ...ep.headers, "Content-Type": "application/json", "Idempotency-Key": idempotency, "X-Hermes-Session-Key": `aiot:${profile}:${conversation}` };
-      const response = await fetchImpl(`${ep.base}/v1/runs`, { method: "POST", headers, body: JSON.stringify({ input: text, session_id: conversation, conversation_history: conversationHistory }), redirect: "error" });
-      const value = await response.json().catch(() => ({}));
-      if (!response.ok || !ID_RE.test(String(value.run_id || ""))) return json(res, response.status || 502, value);
-      const run = { runId: value.run_id, profile, conversation, status: "started", output: "", published: "", createdAt: Date.now() };
-      state.runs[run.runId] = run;
-      append(profile, conversation, run.runId, "user_message", { message_id: `native-user-${run.runId}`, text });
-      append(profile, conversation, run.runId, "turn_start", {});
-      launch(run, ep);
-      return json(res, 202, { run_id: run.runId, status: value.status || "started" });
+      const key=queueKey(profile,conversation);deliveryScopes.set(key,{botTarget,authorization:req.headers.authorization});
+      const fingerprint=createHash('sha256').update(text).digest('hex');
+      const existingRun=Object.values(state.runs).find(run=>run.requestId===requestId&&run.profile===profile&&run.conversation===conversation);
+      if(existingRun)return json(res,202,{run_id:existingRun.runId,status:existingRun.status});
+      const existing=state.queues[key]?.find(item=>item.id===requestId);
+      if(existing){if(existing.fingerprint!==fingerprint)return json(res,409,{error:'request_conflict'});return json(res,202,{queue_id:existing.id,status:existing.status});}
+      state.queues[key] ||= [];
+      if(state.queues[key].length>=20)return json(res,409,{error:'queue_full'});
+      state.queues[key].push({id:requestId,fingerprint,text,profile,conversation,status:'queued',createdAt:Date.now()});save();
+      await drainQueue(key);
+      const run=Object.values(state.runs).find(candidate=>candidate.requestId===requestId&&candidate.profile===profile&&candidate.conversation===conversation);
+      return json(res,202,run?{run_id:run.runId,status:run.status}:{queue_id:requestId,status:state.queues[key]?.find(item=>item.id===requestId)?.status||'queued'});
+    }
+
+    if(req.method==='GET'&&path==='/api/bot/native/queue'){
+      const profile=incoming.searchParams.get('profile')||'';const conversation=incoming.searchParams.get('conversation')||'';
+      if(!PROFILE_RE.test(profile)||!ID_RE.test(conversation))return json(res,400,{error:'invalid_request'});
+      const key=queueKey(profile,conversation);deliveryScopes.set(key,{botTarget,authorization:req.headers.authorization});void drainQueue(key);
+      return json(res,200,{items:(state.queues[key]||[]).map(({id,text,status,createdAt})=>({id,text,status,createdAt}))});
     }
 
     if (req.method === "GET" && path === "/api/bot/native/events") {

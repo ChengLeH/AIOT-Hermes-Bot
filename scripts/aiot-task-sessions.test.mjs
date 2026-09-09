@@ -764,3 +764,88 @@ test('old terminal timestamps migrate from saved evidence, never the migration c
   assert.equal(listed[0].terminalAt,'2026-09-08T10:00:00Z');
   assert.equal(f.state().tasks[0].terminalAt,listed[0].terminalAt);
 });
+
+
+test('Fork context detail exposes only its original bounded snapshot and remains isolated', async () => {
+  const f=fixture();
+  const context=[{role:'user',text:' exact original\n文字 '},{role:'assistant',text:'quoted reply'}];
+  const task=await f.create({mode:'fork',context});
+  assert.equal(task.contextSnapshot,undefined);
+  const scope={owner:'alice',id:task.id,botId:'bot',profile:'worker'};
+  const detail=await f.runtime.get(scope);
+  assert.deepEqual(detail.contextSnapshot,{available:true,messages:context});
+  detail.contextSnapshot.messages[0].text='mutated client copy';
+  assert.equal((await f.runtime.get(scope)).contextSnapshot.messages[0].text,context[0].text);
+  const list=await f.runtime.list({owner:'alice',botId:'bot',profile:'worker'});
+  assert.equal(list[0].contextSnapshot,undefined); assert.equal(list[0].context,undefined);
+  for(const override of [{owner:'other'},{profile:'other'},{botId:'other'}]) await assert.rejects(f.runtime.get({...scope,...override}),/task_not_found/);
+  await f.runtime.onEvent('alice',{type:'message.complete',session_id:'runtime-0',payload:{text:'done',status:'complete'}});
+  const reply=await f.runtime.reply({...scope,text:'new user message'});
+  assert.equal(reply.contextSnapshot,undefined);
+  assert.deepEqual((await f.runtime.get(scope)).contextSnapshot.messages,context);
+  assert.equal(f.completed[0].contextSnapshot,undefined);
+});
+
+test('legacy or invalid Fork context is explicitly unavailable, never rebuilt from conversation text', async () => {
+  for(const context of [undefined,[{role:'system',text:'secret'}],[{role:'user',text:'x',authorization:'secret'}],
+    Array.from({length:8},()=>({role:'user',text:'old'})),[{role:'user',text:'界'.repeat(2000)}],
+    Array.from({length:7},()=>({role:'user',text:'x'.repeat(4000)}))]) {
+    const f=fixture({readState:()=>({tasks:[{id:'legacy',owner:'alice',botId:'bot',profile:'worker',mode:'fork',
+      status:'completed',upstreamMissing:true,contextCount:1,...(context===undefined?{}:{context}),
+      messages:[{role:'user',text:'Current conversation is not original context'}]}]})});
+    const detail=await f.runtime.get({owner:'alice',id:'legacy',botId:'bot',profile:'worker'});
+    assert.deepEqual(detail.contextSnapshot,{available:false});
+    assert.equal(detail.context,undefined);
+  }
+});
+
+test('new empty Fork snapshot is known empty and survives restart', async () => {
+  const f=fixture(); const task=await f.create({mode:'fork',context:[]});
+  assert.deepEqual(f.state().tasks[0].context,[]);
+  const restarted=fixture({readState:()=>f.state()});
+  const detail=await restarted.runtime.get({owner:'alice',id:task.id,botId:'bot',profile:'worker'});
+  assert.deepEqual(detail.contextSnapshot,{available:true,messages:[]});
+});
+
+test('completed task artifacts are attached once and remain isolated to the exact owner, Bot and profile', async () => {
+  let scans=0;
+  const f=fixture({loadArtifacts:async task=>{scans++;assert.equal(task.storedSessionId,'stored-0');return [{path:'/private/result.png',name:'result.png',mime:'image/png'}];}});
+  const task=await f.create();
+  await f.runtime.onEvent('alice',{type:'message.complete',session_id:'runtime-0',payload:{text:'done',status:'success'}});
+  const scope={owner:'alice',id:task.id,botId:'bot',profile:'worker'};
+  const detail=await f.runtime.get(scope);
+  assert.equal(scans,1);
+  assert.deepEqual(detail.messages.at(-1).attachments?.map(({name,mime,source,taskId})=>({name,mime,source,taskId})),[{name:'result.png',mime:'image/png',source:'session',taskId:task.id}]);
+  assert.doesNotMatch(JSON.stringify(detail),/private\/result/);
+  const artifactId=detail.messages.at(-1).attachments[0].id;
+  assert.equal(f.runtime.artifact({...scope,artifactId}).path,'/private/result.png');
+  for(const override of [{owner:'other'},{botId:'other'},{profile:'other'}]) assert.throws(()=>f.runtime.artifact({...scope,...override,artifactId}),/task_not_found/);
+  assert.throws(()=>f.runtime.artifact({...scope,artifactId:'missing'}),/task_artifact_not_found/);
+  await f.runtime.get(scope);assert.equal(scans,1);
+});
+
+test('active Session replies persist in FIFO order and dispatch only after a real terminal event', async()=>{
+  const f=fixture();const task=await f.create();const id1='11111111-1111-4111-8111-111111111111';const id2='22222222-2222-4222-8222-222222222222';
+  let detail=await f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'second',requestId:id1});
+  detail=await f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'third',requestId:id2});
+  await f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'second',requestId:id1});
+  assert.deepEqual(detail.queuedTurns.map(item=>item.text),['second','third']);
+  assert.equal(f.calls.filter(([method])=>method==='prompt.submit').length,1);
+  await f.runtime.onEvent('alice',{type:'message.complete',session_id:'runtime-0',payload:{text:'first done',status:'success'}});
+  detail=await f.runtime.get({owner:'alice',id:task.id,botId:'bot',profile:'worker'});
+  assert.deepEqual(detail.queuedTurns.map(item=>item.text),['third']);
+  assert.equal(f.calls.filter(([method])=>method==='prompt.submit').at(-1)[1].text,'second');
+  await f.runtime.onEvent('alice',{type:'message.complete',session_id:'runtime-0',payload:{text:'second done',status:'success'}});
+  detail=await f.runtime.get({owner:'alice',id:task.id,botId:'bot',profile:'worker'});
+  assert.equal(detail.queuedTurns,undefined);
+  assert.equal(f.calls.filter(([method])=>method==='prompt.submit').at(-1)[1].text,'third');
+  assert.deepEqual(detail.messages.filter(message=>message.role==='user').map(message=>message.text),['work','second','third']);
+});
+
+test('queued Session retry is idempotent and attachments are not staged into an active turn', async()=>{
+  const f=fixture();const task=await f.create();const requestId='33333333-3333-4333-8333-333333333333';
+  await f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'queued',requestId});
+  await assert.rejects(f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'changed',requestId}),/task_request_conflict/);
+  await assert.rejects(f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'file',requestId:'44444444-4444-4444-8444-444444444444',attachments:[{id:'a',name:'x.txt',mime:'text/plain',size:1,bytes:Buffer.from('x')}]}),/task_queued_attachments_unsupported/);
+  assert.equal(f.calls.some(([method])=>method==='file.attach'),false);
+});

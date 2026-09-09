@@ -69,15 +69,43 @@ export async function postNativeRun(input: {
   profile: string;
   conversation: string;
   text: string;
-}): Promise<{ accepted: boolean; runId: string; status: number; error?: string }> {
+  requestId: string;
+}): Promise<{ accepted: boolean; queued: boolean; runId: string; queueId: string; status: number; error?: string }> {
   const res = await hermesFetch(`${input.origin}/api/bot/native/runs`, {
     method: "POST",
     apiKey: input.apiKey,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ profile: input.profile, conversation: input.conversation, text: input.text }),
+    body: JSON.stringify({ profile: input.profile, conversation: input.conversation, text: input.text, requestId: input.requestId }),
   });
-  const json = (await res.json().catch(() => ({}))) as { run_id?: unknown; error?: unknown };
-  return { accepted: res.status === 202 && typeof json.run_id === "string", runId: typeof json.run_id === "string" ? json.run_id : "", status: res.status, error: typeof json.error === "string" ? json.error : undefined };
+  const json = (await res.json().catch(() => ({}))) as { run_id?: unknown; queue_id?: unknown; error?: unknown };
+  const runId = typeof json.run_id === "string" ? json.run_id : "";
+  const queueId = typeof json.queue_id === "string" ? json.queue_id : "";
+  return { accepted: res.status === 202 && Boolean(runId || queueId), queued: Boolean(queueId && !runId), runId, queueId, status: res.status, error: typeof json.error === "string" ? json.error : undefined };
+}
+
+export type NativeQueuedTurn = { id: string; text: string; status: "queued" | "dispatching" | "paused"; createdAt: number };
+
+export async function getNativeQueue(input: {
+  origin: string;
+  apiKey: string;
+  profile: string;
+  conversation: string;
+}): Promise<NativeQueuedTurn[]> {
+  try {
+    const query = new URLSearchParams({ profile: input.profile, conversation: input.conversation });
+    const res = await hermesFetch(`${input.origin}/api/bot/native/queue?${query}`, { apiKey: input.apiKey, timeoutMs: 4_500 });
+    if (!res.ok) return [];
+    const json = (await res.json()) as { items?: unknown };
+    if (!Array.isArray(json.items)) return [];
+    return json.items.flatMap((value) => {
+      if (!value || typeof value !== "object") return [];
+      const row = value as Record<string, unknown>;
+      if (typeof row.id !== "string" || typeof row.text !== "string" || typeof row.createdAt !== "number" || !["queued", "dispatching", "paused"].includes(String(row.status))) return [];
+      return [{ id: row.id, text: row.text, status: row.status as NativeQueuedTurn["status"], createdAt: row.createdAt }];
+    }).slice(0, 20);
+  } catch {
+    return [];
+  }
 }
 
 export async function getNativeRunEvents(origin: string, apiKey: string, after: number): Promise<{ events: BotWireEvent[]; status: number }> {

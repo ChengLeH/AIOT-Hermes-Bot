@@ -109,6 +109,16 @@ export async function getBotAttachment(input: {
   return { blob, mime };
 }
 
+export async function getSessionArtifact(input: {
+  origin: string; apiKey: string; botId: string; profile: string; taskId: string; artifactId: string;
+}): Promise<{ blob: Blob; mime: string }> {
+  const query = new URLSearchParams({ botId: input.botId, profile: input.profile, id: input.taskId, artifactId: input.artifactId });
+  const res = await hermesFetch(`${input.origin}/api/bot/sessions/artifact?${query}`, { apiKey: input.apiKey, headers: { Accept: "*/*" } });
+  if (!res.ok) throw new Error(`artifact ${res.status}`);
+  const blob = await res.blob();
+  return { blob, mime: blob.type || res.headers.get("content-type") || "" };
+}
+
 export async function postBotCompletions(input: {
   origin: string;
   apiKey: string;

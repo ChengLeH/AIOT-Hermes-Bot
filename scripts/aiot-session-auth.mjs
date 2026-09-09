@@ -126,6 +126,30 @@ export function createSessionAuth({ read, write, fetchImpl = globalThis.fetch, n
     if (!response.headers?.get("content-type")?.toLowerCase().includes("application/json")) throw fail();
     return { status: response.status, data: JSON.parse(await boundedText(response)) };
   }
+  async function authenticatedGet(owner, path, accept = "application/json") {
+    if (typeof path !== "string" || !path.startsWith("/api/") || path.startsWith("//") || hasControlCharacter(path) ||
+        typeof accept !== "string" || !accept || accept.length > 200 || hasControlCharacter(accept)) throw fail();
+    let record = await load(owner);
+    if (!record) throw fail();
+    const status = JSON.parse(await bootstrapGet(record.dashboardOrigin, "/api/status", "application/json"));
+    let headers;
+    if (status.auth_required === false) {
+      const html = await bootstrapGet(record.dashboardOrigin, "/", "text/html");
+      headers = { Accept: accept, "X-Hermes-Session-Token": legacyBootstrap(html) };
+    } else if (status.auth_required === true) {
+      if (record.expires_at * 1000 <= now() + 30_000) record = await refresh(owner, record);
+      headers = { Accept: accept, Authorization: `Bearer ${record.access_token}` };
+    } else throw fail();
+    const endpoint = `${record.dashboardOrigin}${path}`;
+    let response = await fetchImpl(endpoint, { method: "GET", redirect: "error", signal: AbortSignal.timeout(20_000), headers, cache: "no-store" });
+    if (response.status === 401 && headers.Authorization) {
+      record = await refresh(owner, record);
+      headers = { Accept: accept, Authorization: `Bearer ${record.access_token}` };
+      response = await fetchImpl(endpoint, { method: "GET", redirect: "error", signal: AbortSignal.timeout(20_000), headers, cache: "no-store" });
+    }
+    if (response.redirected || (response.url && response.url !== endpoint)) throw fail();
+    return response;
+  }
 
   return {
     start({ dashboardOrigin, callbackUrl, owner, provider = "" }) {
@@ -218,6 +242,9 @@ export function createSessionAuth({ read, write, fetchImpl = globalThis.fetch, n
         while (configCache.size > 256) configCache.delete(configCache.keys().next().value);
         return value;
       }));
+    },
+    get(owner, path, accept) {
+      return safely(() => locked(owner, () => authenticatedGet(owner, path, accept)));
     },
     clear(owner) {
       return safely(() => locked(owner, async () => {

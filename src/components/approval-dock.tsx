@@ -20,6 +20,7 @@ export const ApprovalDock = forwardRef<ApprovalDockHandle, {
   const seenTriggers = useRef(new Set<string>());
   const en = locale === "en";
   const pending = approvals.filter((card) => !card.hidden && ["pending", "submitting", "error"].includes(card.status));
+  const pendingTrigger = pending.at(-1)?.requestId ?? "";
   const visible = pending.length > 0;
   const status = en ? "Waiting for approval" : "等待批准";
 
@@ -40,7 +41,7 @@ export const ApprovalDock = forwardRef<ApprovalDockHandle, {
   useImperativeHandle(ref, () => ({ collapse: () => collapse() }));
 
   useEffect(() => {
-    const trigger = pending.at(-1)?.requestId ?? "";
+    const trigger = pendingTrigger;
     if (!trigger && expanded) {
       setExpanded(false);
       if (window.history.state?.aiotApprovalDock === profile) window.history.back();
@@ -53,7 +54,7 @@ export const ApprovalDock = forwardRef<ApprovalDockHandle, {
         setExpanded(true);
       }
     }
-  }, [working, pending.at(-1)?.requestId, profile, expanded]);
+  }, [pendingTrigger, profile, expanded]);
 
   useEffect(() => {
     const pop = () => { if (window.history.state?.aiotApprovalDock !== profile) collapse(true); };

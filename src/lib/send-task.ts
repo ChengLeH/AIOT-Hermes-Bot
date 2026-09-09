@@ -17,7 +17,7 @@ export async function sendTask(
     const state = useDesk.getState();
     const bot = state.bots.find((b) => b.id === botId);
     if (!bot) return false;
-    if (isTurnBusy(state.botState[botId], Boolean(state.sending[botId]))) return false;
+    const busy = isTurnBusy(state.botState[botId], Boolean(state.sending[botId]));
     if (!bot.available) {
       state.pushActivity(botId, { label: t(state.locale, "error.unavailable", { name: bot.profile }), kind: "wait" });
       return false;
@@ -34,13 +34,14 @@ export async function sendTask(
     const trimmed = (text ?? state.composerDrafts[botId] ?? "").trim();
     const ids = attachmentIds?.filter(Boolean) ?? [];
     if (!trimmed && ids.length === 0) return false;
+    const native = ids.length === 0 && canUseNativeRuns(bot.nativeCapabilities);
+    if (busy && !native) return false;
     state.setDraft(botId, "");
     state.setSending(botId, true);
-    state.setBotState(botId, "waiting");
+    if (!busy) state.setBotState(botId, "waiting");
     try {
-      const native = ids.length === 0 && canUseNativeRuns(bot.nativeCapabilities);
       const result = native
-        ? await postNativeRun({ origin, apiKey, profile, conversation, text: trimmed })
+        ? await postNativeRun({ origin, apiKey, profile, conversation, text: trimmed, requestId: crypto.randomUUID() })
         : await postBotMessage({
             origin,
             apiKey,
@@ -52,27 +53,27 @@ export async function sendTask(
       const ack = { accepted: result.accepted, status: result.status };
       if (isUnauthorizedStatus(ack.status)) {
         useDesk.getState().markDisconnected();
-        useDesk.getState().setBotState(botId, "idle");
+        if (!busy) useDesk.getState().setBotState(botId, "idle");
         return false;
       }
       if (!ack.accepted) {
         if (!useDesk.getState().composerDrafts[botId]) useDesk.getState().setDraft(botId, trimmed);
         const contextError = "error" in result ? result.error : undefined;
         if (contextError === "context_unavailable" || contextError === "context_too_large") {
-          useDesk.getState().setBotState(botId, "idle");
+          if (!busy) useDesk.getState().setBotState(botId, "idle");
           useDesk.getState().pushActivity(botId, { label: state.locale === "en"
             ? (contextError === "context_too_large" ? "Conversation history is too large to send safely. Your message was not sent." : "Could not load this Bot's conversation history. Your message was not sent; please retry.")
             : (contextError === "context_too_large" ? "對話歷史過大，暫時無法安全送出。你的訊息尚未傳送。" : "無法讀取這位 Bot 的對話歷史，訊息尚未傳送，請稍後重試。"), kind: "wait" });
           return false;
         }
-        useDesk.getState().setBotState(botId, "idle");
+        if (!busy) useDesk.getState().setBotState(botId, "idle");
         useDesk.getState().pushActivity(botId, { label: "error.notAccepted", kind: "wait" });
         return false;
       }
-      useDesk.getState().pushPendingUser(botId, trimmed, attachmentMeta);
+      if (!("queued" in result) || !result.queued) useDesk.getState().pushPendingUser(botId, trimmed, attachmentMeta);
       return true;
     } catch {
-      useDesk.getState().setBotState(botId, "idle");
+      if (!busy) useDesk.getState().setBotState(botId, "idle");
       useDesk.getState().pushActivity(botId, { label: "error.sendFail", kind: "wait" });
       return false;
     } finally {

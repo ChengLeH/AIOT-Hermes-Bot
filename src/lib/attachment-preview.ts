@@ -78,36 +78,43 @@ export function revokeQueuedPreview(item: QueuedAttachment): void {
   }
 }
 
-export function rememberSessionImage(id: string, url: string): void {
+function scopedPreviewKey(id: string, scope = ""): string {
+  return `${scope}\n${id}`;
+}
+
+export function rememberSessionImage(id: string, url: string, scope = ""): void {
   if (!id || !url) return;
-  const prev = sessionImages.get(id);
+  const key = scopedPreviewKey(id, scope);
+  const prev = sessionImages.get(key);
   if (prev && prev !== url && typeof URL !== "undefined") URL.revokeObjectURL(prev);
-  sessionImages.set(id, url);
+  sessionImages.set(key, url);
 }
 
-export function sessionImageUrl(id: string): string | undefined {
-  return sessionImages.get(id);
+export function sessionImageUrl(id: string, scope = ""): string | undefined {
+  return sessionImages.get(scopedPreviewKey(id, scope));
 }
 
-export function transferQueueToSession(items: QueuedAttachment[]): void {
+export function transferQueueToSession(items: QueuedAttachment[], scope = ""): void {
   for (const item of items) {
-    if (item.attachment?.id && item.previewUrl && isImageAttachment(item.attachment)) {
-      rememberSessionImage(item.attachment.id, item.previewUrl);
+    if (scope && item.attachment?.id && item.previewUrl && isImageAttachment(item.attachment)) {
+      rememberSessionImage(item.attachment.id, item.previewUrl, scope);
     } else {
       revokeQueuedPreview(item);
     }
   }
 }
 
-export function rememberFetchedImage(id: string, url: string): void {
+export function rememberFetchedImage(id: string, url: string, scope = ""): void {
   if (!id || !url) return;
-  const prev = fetchedImages.get(id);
+  const key = scopedPreviewKey(id, scope);
+  const prev = fetchedImages.get(key);
   if (prev && prev !== url && typeof URL !== "undefined") URL.revokeObjectURL(prev);
-  fetchedImages.set(id, url);
+  fetchedImages.set(key, url);
 }
 
-export function fetchedImageUrl(id: string): string | undefined {
-  return fetchedImages.get(id) ?? sessionImages.get(id);
+export function fetchedImageUrl(id: string, scope = ""): string | undefined {
+  const key = scopedPreviewKey(id, scope);
+  return fetchedImages.get(key) ?? sessionImages.get(key);
 }
 
 export function resetPreviewCaches(): void {

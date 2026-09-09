@@ -2,6 +2,7 @@ export type ViewportMetrics = {
   visualHeight?: number;
   visualOffsetTop?: number;
   innerHeight: number;
+  standalone?: boolean;
 };
 
 export type ViewportBox = {
@@ -25,11 +26,19 @@ export function isDeskLayout(layout: string | null | undefined): boolean {
 
 export function resolveAppViewport(metrics: ViewportMetrics): { height: number; top: number } {
   const visual = metrics.visualHeight;
-  const height =
-    typeof visual === "number" && Number.isFinite(visual) && visual > 0 ? visual : metrics.innerHeight;
+  const validVisual = typeof visual === "number" && Number.isFinite(visual) && visual > 0;
+  const keyboardGap = validVisual ? metrics.innerHeight - visual : 0;
+  // In standalone iOS, visualViewport may settle one safe-area/chrome inset
+  // shorter than innerHeight. Treat only a proportional, keyboard-sized gap
+  // as a real resize; Safari tabs keep their native visual viewport behavior.
+  const standaloneSettlingGap = metrics.standalone && validVisual && keyboardGap > 0 && keyboardGap < metrics.innerHeight * 0.18;
+  const height = validVisual && !standaloneSettlingGap ? visual : metrics.innerHeight;
   return {
     height,
-    top: Math.max(0, metrics.visualOffsetTop ?? 0),
+    // Standalone iOS can retain a transient visualViewport offset after its
+    // browser chrome or keyboard settles. Safe-area padding already owns the
+    // top inset, so translating the fixed app root would apply it twice.
+    top: 0,
   };
 }
 
@@ -89,10 +98,13 @@ export function bindVisualViewport(): () => void {
       return;
     }
     const vv = window.visualViewport;
+    const standalone = window.matchMedia?.("(display-mode: standalone)").matches === true ||
+      (navigator as Navigator & { standalone?: boolean }).standalone === true;
     const box = viewportRootBox({
       visualHeight: vv?.height,
       visualOffsetTop: vv?.offsetTop,
       innerHeight: window.innerHeight,
+      standalone,
     });
     root.style.setProperty("--app-height", `${box.height}px`);
     root.style.setProperty("--app-top", `${box.top}px`);
@@ -101,7 +113,6 @@ export function bindVisualViewport(): () => void {
     for (const el of document.querySelectorAll<HTMLElement>(ROOT_SELECTOR)) {
       applyViewportBox(el, box.height, box.top);
     }
-    if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
   };
   apply();
   const vv = window.visualViewport;
@@ -112,12 +123,19 @@ export function bindVisualViewport(): () => void {
   window.addEventListener("focusin", apply);
   const mo = new MutationObserver(apply);
   mo.observe(root, { attributes: true, attributeFilter: ["data-app-layout"] });
+  const preventZoomGesture = (event: Event) => event.preventDefault();
+  document.addEventListener("gesturestart", preventZoomGesture, { passive: false });
+  document.addEventListener("gesturechange", preventZoomGesture, { passive: false });
+  document.addEventListener("gestureend", preventZoomGesture, { passive: false });
   return () => {
     vv?.removeEventListener("resize", apply);
     vv?.removeEventListener("scroll", apply);
     window.removeEventListener("resize", apply);
     window.removeEventListener("orientationchange", apply);
     window.removeEventListener("focusin", apply);
+    document.removeEventListener("gesturestart", preventZoomGesture);
+    document.removeEventListener("gesturechange", preventZoomGesture);
+    document.removeEventListener("gestureend", preventZoomGesture);
     mo.disconnect();
   };
 }

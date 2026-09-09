@@ -5,6 +5,8 @@ export type AttachmentDescriptor = {
   name: string;
   mime: string;
   size: number;
+  source?: "bot" | "session";
+  taskId?: string;
 };
 
 export const MAX_ATTACHMENTS = 5;
@@ -49,11 +51,13 @@ export function parseAttachmentList(raw: unknown): AttachmentDescriptor[] {
     const id = typeof r.id === "string" ? r.id : "";
     const name = typeof r.name === "string" ? r.name : "";
     if (!id || !name) continue;
+    const session = r.source === "session" && typeof r.taskId === "string" && r.taskId;
     out.push({
       id,
       name,
       mime: typeof r.mime === "string" ? r.mime : "",
       size: typeof r.size === "number" ? r.size : 0,
+      ...(session ? { source: "session" as const, taskId: r.taskId as string } : {}),
     });
   }
   return out;

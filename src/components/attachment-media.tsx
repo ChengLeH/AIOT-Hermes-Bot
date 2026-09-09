@@ -10,7 +10,7 @@ import {
   sessionImageUrl,
   type QueuedAttachment,
 } from "@/lib/attachment-preview";
-import { getBotAttachment } from "@/lib/native-bot";
+import { getBotAttachment, getSessionArtifact } from "@/lib/native-bot";
 import { t, type Locale } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 
@@ -67,18 +67,22 @@ export function MessageAttachments({
   apiKey,
   locale,
   align,
+  session,
+  cacheScope,
 }: {
   attachments: AttachmentDescriptor[];
   origin: string;
   apiKey: string;
   locale: Locale;
   align: "start" | "end";
+  session?: { botId: string; profile: string };
+  cacheScope?: string;
 }) {
   if (attachments.length === 0) return null;
   return (
     <ul className={cn("flex flex-wrap gap-1.5", align === "end" ? "justify-end" : "justify-start")}>
       {attachments.map((item) => (
-        <RemoteAttachment key={item.id} item={item} origin={origin} apiKey={apiKey} locale={locale} />
+        <RemoteAttachment key={item.id} item={item} origin={origin} apiKey={apiKey} locale={locale} session={session} cacheScope={cacheScope} />
       ))}
     </ul>
   );
@@ -89,21 +93,28 @@ function RemoteAttachment({
   origin,
   apiKey,
   locale,
+  session,
+  cacheScope,
 }: {
   item: AttachmentDescriptor;
   origin: string;
   apiKey: string;
   locale: Locale;
+  session?: { botId: string; profile: string };
+  cacheScope?: string;
 }) {
-  const local = origin && apiKey ? sessionImageUrl(item.id) || fetchedImageUrl(item.id) : undefined;
+  const previewScope = cacheScope || JSON.stringify([item.source === "session" ? "session" : "bot", origin, session?.botId || "", session?.profile || "", item.taskId || ""]);
+  const local = origin && apiKey ? sessionImageUrl(item.id, previewScope) || fetchedImageUrl(item.id, previewScope) : undefined;
   const [url, setUrl] = useState(local);
   const [busy, setBusy] = useState(false);
   const image = isImageAttachment(item);
+  const sessionBotId = session?.botId;
+  const sessionProfile = session?.profile;
 
   useEffect(() => {
     setUrl(undefined);
     if (!origin || !apiKey || !item.id) return;
-    const cached = sessionImageUrl(item.id) || fetchedImageUrl(item.id);
+    const cached = sessionImageUrl(item.id, previewScope) || fetchedImageUrl(item.id, previewScope);
     if (cached) {
       setUrl(cached);
       return;
@@ -111,13 +122,16 @@ function RemoteAttachment({
     if (!origin || !apiKey || !item.id) return;
     let cancelled = false;
     setBusy(true);
-    void getBotAttachment({ origin, apiKey, id: item.id })
+    const download = item.source === "session" && item.taskId && sessionBotId && sessionProfile
+      ? getSessionArtifact({ origin, apiKey, botId: sessionBotId, profile: sessionProfile, taskId: item.taskId, artifactId: item.id })
+      : getBotAttachment({ origin, apiKey, id: item.id });
+    void download
       .then(({ blob, mime }) => {
         if (cancelled) return;
         const created = createPreviewUrl(blob, { name: item.name, type: mime || item.mime });
         const href = created || (typeof URL !== "undefined" ? URL.createObjectURL(blob) : undefined);
         if (href) {
-          rememberFetchedImage(item.id, href);
+          rememberFetchedImage(item.id, href, previewScope);
           setUrl(href);
         }
       })
@@ -130,7 +144,7 @@ function RemoteAttachment({
     return () => {
       cancelled = true;
     };
-  }, [item.id, item.name, item.mime, origin, apiKey, image]);
+  }, [item.id, item.name, item.mime, item.source, item.taskId, origin, apiKey, image, sessionBotId, sessionProfile, previewScope]);
 
   const meta = [item.mime, formatFileSize(item.size)].filter(Boolean).join(" · ");
 

@@ -1,12 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isReadingBot, assistantSnapshot } from "./unread.ts";
+import { isReadingBot, shouldShowUnread, assistantSnapshot } from "./unread.ts";
 
 test("roster, another bot and background chat retain unread; visible matching chat reads it", () => {
   assert.equal(isReadingBot("a", "a", "chat", true), true);
   assert.equal(isReadingBot("a", "a", "roster", true), false);
   assert.equal(isReadingBot("a", "b", "chat", true), false);
   assert.equal(isReadingBot("a", "a", "chat", false), false);
+});
+test("a completed Session task marks its parent Bot unread even while the task panel overlays that chat", () => {
+  assert.equal(shouldShowUnread("a", "a", "chat", true), false);
+  assert.equal(shouldShowUnread("a", "a", "chat", true, true), true);
 });
 test("history replay stays read unless assistant identity, content or attachments change", () => {
   const old = [{ id: "a1", botId: "a", role: "assistant", content: "hello" }];

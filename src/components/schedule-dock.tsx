@@ -15,8 +15,8 @@ import type { Locale } from "@/lib/locale";
 export type ScheduleDockHandle = { collapse: () => boolean };
 export const ScheduleDock = forwardRef<
   ScheduleDockHandle,
-  { profile: string; name: string; swatch: string; origin: string; apiKey: string; locale: Locale }
->(function ScheduleDock({ profile, swatch, origin, apiKey, locale }, ref) {
+  { profile: string; name: string; swatch: string; origin: string; apiKey: string; locale: Locale; onExpandedChange?: (expanded: boolean) => void }
+>(function ScheduleDock({ profile, swatch, origin, apiKey, locale, onExpandedChange }, ref) {
   const en = locale === "en";
   const bots = useDesk((s) => s.bots);
   const [targetProfile, setTargetProfile] = useState(profile);
@@ -38,7 +38,6 @@ export const ScheduleDock = forwardRef<
   const seen = useRef(new Set<string>());
   const expandedRef = useRef(false);
   const refreshRef = useRef<() => void>(() => {});
-  const animations = useRef<HTMLElement[]>([]);
   const url = `${origin}/api/bot/native/jobs?profile=${encodeURIComponent(profile)}`;
   const open = useCallback(() => {
     if (expandedRef.current) return;
@@ -53,7 +52,8 @@ export const ScheduleDock = forwardRef<
       "",
     );
     setExpanded(true);
-  }, [profile]);
+    onExpandedChange?.(true);
+  }, [profile, onExpandedChange]);
   const collapse = useCallback(
     (fromHistory = false) => {
       if (
@@ -62,127 +62,15 @@ export const ScheduleDock = forwardRef<
       )
         return false;
       expandedRef.current = false;
-      const el = card.current;
-      const old = el?.getBoundingClientRect();
-      const ghost = el?.cloneNode(true) as HTMLElement | undefined;
       setExpanded(false);
+      onExpandedChange?.(false);
       if (!fromHistory && window.history.state?.aiotScheduleDock === profile) window.history.back();
-      requestAnimationFrame(() => {
-        if (
-          !el ||
-          !el.isConnected ||
-          !old ||
-          !ghost ||
-          window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        )
-          return;
-        const end = el.getBoundingClientRect();
-        Object.assign(ghost.style, {
-          position: "fixed",
-          top: `${old.top}px`,
-          left: `${old.left}px`,
-          width: `${old.width}px`,
-          height: `${old.height}px`,
-          zIndex: "90",
-          pointerEvents: "none",
-          transformOrigin: "top left",
-        });
-        ghost.inert = true;
-        ghost.setAttribute("aria-hidden", "true");
-        document.body.appendChild(ghost);
-        animations.current.push(ghost);
-        el.style.visibility = "hidden";
-        const x = end.left - old.left,
-          y = Math.max(0, end.top - old.top),
-          sx = end.width / old.width,
-          sy = end.height / old.height;
-        const source = ghost.querySelector<HTMLElement>(".approval-mascot");
-        const destination = el.querySelector<HTMLElement>(".approval-mascot");
-        if (source && destination) {
-          const start = source.getBoundingClientRect(),
-            landing = destination.getBoundingClientRect();
-          const mascot = source.cloneNode(true) as HTMLElement;
-          source.style.visibility = "hidden";
-          Object.assign(mascot.style, {
-            position: "fixed",
-            left: `${start.left}px`,
-            top: `${start.top}px`,
-            zIndex: "91",
-            pointerEvents: "none",
-          });
-          mascot.setAttribute("aria-hidden", "true");
-          document.body.appendChild(mascot);
-          animations.current.push(mascot);
-          const mx = landing.left - start.left,
-            my = Math.max(0, landing.top - start.top);
-          mascot
-            .animate(
-              [
-                { transform: "translate(0,0) scale(1)" },
-                {
-                  transform: `translate(${mx * 0.2}px,${my * 0.35}px) scale(.78,1.45)`,
-                  offset: 0.24,
-                },
-                { transform: `translate(${mx}px,${my}px) scale(1.25,.65)`, offset: 0.76 },
-                { transform: `translate(${mx}px,${my}px) scale(.94,1.08)`, offset: 0.89 },
-                { transform: `translate(${mx}px,${my}px) scale(1)` },
-              ],
-              { duration: 320, easing: "ease-in" },
-            )
-            .finished.then(
-              () => {
-                mascot.remove();
-                animations.current.splice(animations.current.indexOf(mascot), 1);
-              },
-              () => {
-                mascot.remove();
-                animations.current.splice(animations.current.indexOf(mascot), 1);
-              },
-            );
-          mascot
-            .querySelector(".aiot-eyes")
-            ?.animate(
-              [
-                { transform: "translateY(0)" },
-                { transform: "translateY(-9px) scaleY(1.7)", offset: 0.2 },
-                { transform: "translateY(-9px) scaleY(1.7)", offset: 0.7 },
-                { transform: "translateY(0)" },
-              ],
-              { duration: 320 },
-            );
-        }
-        const animation = ghost.animate(
-          [
-            { transform: "translate(0,0) scale(1)", opacity: 1 },
-            {
-              transform: `translate(${x * 0.3}px,${y * 0.35}px) scale(${1 + (sx - 1) * 0.3},1.1)`,
-              offset: 0.25,
-            },
-            {
-              transform: `translate(${x}px,${y}px) scale(${sx},${sy * 0.8})`,
-              offset: 0.78,
-              opacity: 0.8,
-            },
-            { transform: `translate(${x}px,${y}px) scale(${sx},${sy * 1.08})`, offset: 0.9 },
-            { transform: `translate(${x}px,${y}px) scale(${sx},${sy})`, opacity: 0 },
-          ],
-          { duration: 320, easing: "cubic-bezier(.45,0,.8,1)" },
-        );
-        const done = () => {
-          ghost.remove();
-          const index = animations.current.indexOf(ghost);
-          if (index >= 0) animations.current.splice(index, 1);
-          el.style.visibility = "";
-        };
-        animation.finished.then(done, done);
-      });
       return true;
     },
-    [profile],
+    [profile, onExpandedChange],
   );
   useImperativeHandle(ref, () => ({ collapse: () => collapse() }));
   useEffect(() => {
-    const activeAnimations = animations.current;
     const pop = () => {
       if (window.history.state?.aiotScheduleDock !== profile) collapse(true);
     };
@@ -197,7 +85,6 @@ export const ScheduleDock = forwardRef<
     return () => {
       window.removeEventListener("popstate", pop);
       window.removeEventListener("keydown", key);
-      activeAnimations.forEach((e) => e.remove());
     };
   }, [profile, collapse]);
   useEffect(() => {
@@ -294,6 +181,19 @@ export const ScheduleDock = forwardRef<
       setBusy(false);
     }
   }
+  async function removeJob(job: ScheduleJob) {
+    if (activeExecution(job)) {
+      const paused = await action(
+        `${origin}/api/bot/native/jobs/${encodeURIComponent(job.id)}/pause?profile=${encodeURIComponent(profile)}`,
+      );
+      if (!paused) return;
+    }
+    await action(
+      `${origin}/api/bot/native/jobs/${encodeURIComponent(job.id)}?profile=${encodeURIComponent(profile)}`,
+      {},
+      "DELETE",
+    );
+  }
   if (!available) return null;
   const labels = {
     claimed: en ? "Waiting to run" : "等待執行",
@@ -303,12 +203,19 @@ export const ScheduleDock = forwardRef<
     unknown: en ? "Status unconfirmed" : "狀態未確認",
   };
   const status = current
-    ? labels[current.latest_execution?.status ?? "unknown"]
+    ? !current.enabled
+      ? en
+        ? "Paused"
+        : "已暫停"
+      : labels[current.latest_execution?.status ?? "unknown"]
     : en
       ? "Schedules"
       : "排程工作";
   return (
-    <div className="approval-dock-slot schedule-slot" onClick={(e) => e.stopPropagation()}>
+    <div
+      className={`approval-dock-slot schedule-slot${expanded ? " schedule-slot-expanded" : ""}`}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div
         ref={card}
         className={`approval-dock ${!current ? "schedule-idle" : ""} ${expanded ? "approval-dock-expanded" : "approval-dock-compact"}`}
@@ -321,7 +228,7 @@ export const ScheduleDock = forwardRef<
         >
           {current ? (
             <span className="approval-mascot">
-              <BotAvatar profile={profile} swatch={swatch} size={38} />
+              <BotAvatar profile={profile} swatch={swatch} size={expanded ? 38 : 14} />
             </span>
           ) : (
             <CalendarClock size={16} />
@@ -395,16 +302,9 @@ export const ScheduleDock = forwardRef<
                 </button>
                 <button
                   type="button"
-                  disabled={busy || activeExecution(job)}
+                  disabled={busy}
                   aria-label={en ? "Delete schedule" : "刪除排程"}
-                  onClick={() => {
-                    if (window.confirm(en ? "Delete this schedule?" : "刪除這個排程？"))
-                      void action(
-                        `${origin}/api/bot/native/jobs/${encodeURIComponent(job.id)}?profile=${encodeURIComponent(profile)}`,
-                        {},
-                        "DELETE",
-                      );
-                  }}
+                  onClick={() => void removeJob(job)}
                 >
                   <Trash2 size={14} />
                 </button>

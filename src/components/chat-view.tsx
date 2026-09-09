@@ -4,7 +4,6 @@ import { recentTaskContext } from "@/lib/task-context";
 import { createUploadBatch } from "@/lib/upload-batch";
 import { UploadFeedback } from "./upload-feedback";
 import { localizeSystemNotice } from "@/lib/system-notice";
-import { usePullRefresh } from "@/lib/pull-refresh";
 import { ScheduleDock, type ScheduleDockHandle } from "./schedule-dock";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronLeft, ChevronUp, ListTodo, Pin, Search, Square, X } from "lucide-react";
@@ -44,6 +43,7 @@ import {
 import { completionMenuAction, isComposingKey, isTurnBusy, shouldSendOnEnter } from "@/lib/composer";
 import { canInterrupt, interruptAccepted } from "@/lib/interrupt";
 import { postBotCompletions, postBotInterrupt } from "@/lib/native-bot";
+import { canUseNativeRuns, getNativeQueue, type NativeQueuedTurn } from "@/lib/native-runs";
 import { sendTask } from "@/lib/send-task";
 import { sentenceBubbles } from "@/lib/sentence-bubbles";
 import { Markdown } from "@/lib/markdown";
@@ -82,7 +82,6 @@ export function ChatView() {
   const sendingMap = useDesk((s) => s.sending);
   const connection = useDesk((s) => s.connection);
   const locale = resolveLocale(useDesk((s) => s.locale));
-  const pull = usePullRefresh();
   const approvals = useDesk((s) => s.approvals);
   const taskWorkspaceRef = useRef<TaskWorkspaceHandle>(null);
   const [forkArmed, setForkArmed] = useState(false);
@@ -124,6 +123,8 @@ export function ChatView() {
   const [findIndex, setFindIndex] = useState(0);
   const [away, setAway] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
+  const [nativeQueue, setNativeQueue] = useState<NativeQueuedTurn[]>([]);
+  const [scheduleExpanded, setScheduleExpanded] = useState(false);
 
   const bot = bots.find((b) => b.id === activeBotId);
   const thread = messages.filter((m) => m.botId === activeBotId);
@@ -132,6 +133,7 @@ export function ChatView() {
   const working = state === "working";
   const sending = bot ? Boolean(sendingMap[bot.id]) : false;
   const blocked = bot ? isTurnBusy(state, sending) : true;
+  const nativeQueueOn = Boolean(bot && canUseNativeRuns(bot.nativeCapabilities));
   const live = connectionLive(connection);
   const gate = resolveCredentialGate(connection);
   const presenceOnline = bot ? botPresenceOnline({ live, available: bot.available }) : false;
@@ -151,6 +153,10 @@ export function ChatView() {
   );
   const matchId = matches[findIndex] ?? "";
   const searchQuery = finding ? findQuery : "";
+  const latestThreadContent = thread.at(-1)?.content;
+  const threadIsEmpty = thread.length === 0 && threadApprovals.length === 0;
+  const completionProfile = bot?.profile;
+  const completionConversation = bot?.conversation;
 
   useEffect(() => {
     for (const item of chipsRef.current) revokeQueuedPreview(item);
@@ -162,6 +168,21 @@ export function ChatView() {
     setFindIndex(0);
     setAway(false);
   }, [bot?.id]);
+
+  useEffect(() => {
+    setNativeQueue([]);
+    if (!bot || !nativeQueueOn || !live || !bot.conversation) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const items = await getNativeQueue({ origin: connection.origin, apiKey: connection.apiKey, profile: bot.profile, conversation: bot.conversation });
+      if (!cancelled) setNativeQueue(items);
+    };
+    void refresh();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 2_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [bot, nativeQueueOn, live, connection.origin, connection.apiKey]);
 
   useEffect(() => {
     return () => {
@@ -186,7 +207,7 @@ export function ChatView() {
     el.scrollTop = el.scrollHeight;
     lastScrollTop.current = el.scrollTop;
     setAway(false);
-  }, [bot?.id, thread.length, thread.at(-1)?.content, working, chips.length, threadApprovals.length, finding]);
+  }, [bot?.id, thread.length, latestThreadContent, working, chips.length, threadApprovals.length, finding]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -216,7 +237,7 @@ export function ChatView() {
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
     };
-  }, [bot?.id, thread.length === 0 && threadApprovals.length === 0]);
+  }, [bot?.id, threadIsEmpty]);
 
   useEffect(() => {
     const el = composerRef.current;
@@ -272,7 +293,7 @@ export function ChatView() {
   }, [finding]);
 
   useEffect(() => {
-    if (!completionsOn || !bot) {
+    if (!completionsOn || !completionProfile || !completionConversation) {
       setSuggest([]);
       tokenRef.current = null;
       return;
@@ -285,8 +306,8 @@ export function ChatView() {
     }
     const key = {
       origin: connection.origin,
-      profile: bot.profile,
-      conversation: bot.conversation,
+      profile: completionProfile,
+      conversation: completionConversation,
       trigger: token.trigger,
       query: token.query,
     };
@@ -304,8 +325,8 @@ export function ChatView() {
       void postBotCompletions({
         origin: connection.origin,
         apiKey: connection.apiKey,
-        profile: bot.profile,
-        conversation: bot.conversation,
+        profile: completionProfile,
+        conversation: completionConversation,
         trigger: token.trigger,
         query: token.query,
         signal: abort.signal,
@@ -324,7 +345,7 @@ export function ChatView() {
       window.clearTimeout(timer);
       abortRef.current?.abort();
     };
-  }, [completionsOn, draft, cursor, bot?.profile, bot?.conversation, connection.origin, connection.apiKey]);
+  }, [completionsOn, draft, cursor, completionProfile, completionConversation, connection.origin, connection.apiKey]);
 
   if (!bot) {
     return <div className="grid h-full min-h-0 place-items-center text-sm text-muted">{t(locale, "chat.pick")}</div>;
@@ -441,7 +462,7 @@ export function ChatView() {
         }
         return;
       }
-      if (isTurnBusy(latest.botState[botId], Boolean(latest.sending[botId]))) return;
+      if (isTurnBusy(latest.botState[botId], Boolean(latest.sending[botId])) && !nativeQueueOn) return;
       // Sending is the user's explicit navigation action. Apply it now, not when
       // a slow acknowledgement arrives after they may have scrolled elsewhere.
       followLatest.current = true;
@@ -458,9 +479,13 @@ export function ChatView() {
       requestAnimationFrame(pinSendStart);
       const ok = await sendTask(botId, value, ids, meta);
       if (ok) {
-        transferQueueToSession(queued);
+        transferQueueToSession(queued, JSON.stringify(["bot", latest.connection.origin, botId, current.profile, current.conversation]));
         setChips([]);
         setSuggest([]);
+        if (nativeQueueOn) {
+          const currentConnection = useDesk.getState().connection;
+          void getNativeQueue({ origin: currentConnection.origin, apiKey: currentConnection.apiKey, profile: current.profile, conversation: current.conversation }).then(setNativeQueue);
+        }
       }
     } finally {
       setCreatingTask(false);
@@ -537,7 +562,7 @@ export function ChatView() {
 
   const canSend =
     (draft.trim().length > 0 || chips.length > 0) &&
-    (!blocked || forkArmed || independentArmed || chips.length > 0) &&
+    (!blocked || (nativeQueueOn && draft.trim().length > 0 && chips.length === 0) || forkArmed || independentArmed || chips.length > 0) &&
     !creatingTask &&
     !waitingUploads &&
     !uploadError &&
@@ -545,12 +570,12 @@ export function ChatView() {
     live &&
     Boolean(bot.conversation);
   const forkSelected = forkArmed || (chips.length > 0 && !independentArmed);
-  const showStop = interruptsOn && working && !forkArmed && !independentArmed && chips.length === 0;
+  const showStop = interruptsOn && working && !draft.trim() && !forkArmed && !independentArmed && chips.length === 0;
   const token = liveToken;
 
   return (
     <section
-      className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg"
+      className="app-theme-surface relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg"
       onTouchStart={(event) => {
         const touch = event.touches[0];
         swipeStart.current = touch && touch.clientX <= 28 ? { x: touch.clientX, y: touch.clientY } : null;
@@ -668,12 +693,11 @@ export function ChatView() {
         </button>
       ) : null}
 
-      <div ref={scroller} {...pull.handlers} onClick={(event) => {
+      <div ref={scroller} onClick={(event) => {
         if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
         if (finding) closeFinding();
         else if (!scheduleDockRef.current?.collapse()) approvalDockRef.current?.collapse();
       }} className="chat-transcript min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        {pull.distance > 20 && <div role="status" className="text-center text-xs text-subtle py-2">{locale === "en" ? (pull.distance >= 90 ? "Release to refresh" : "Pull to refresh") : (pull.distance >= 90 ? "放開即可重新整理" : "下拉重新整理")}</div>}
         {thread.length === 0 && threadApprovals.length === 0 ? (
           <div className="mx-auto max-w-md pt-8">
             <p className="title-glyph font-display text-2xl font-semibold">
@@ -701,6 +725,7 @@ export function ChatView() {
                           apiKey={connection.apiKey}
                           locale={locale}
                           align="start"
+                          cacheScope={JSON.stringify(["bot", connection.origin, bot.id, bot.profile, bot.conversation])}
                         />
                       </div>
                     ) : null}
@@ -716,6 +741,7 @@ export function ChatView() {
                           apiKey={connection.apiKey}
                           locale={locale}
                           align="end"
+                          cacheScope={JSON.stringify(["bot", connection.origin, bot.id, bot.profile, bot.conversation])}
                         />
                       </div>
                     ) : null}
@@ -752,16 +778,17 @@ export function ChatView() {
           </div>
         ) : null}
         {live && <div className="task-navigation">
-          <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} />
-          <button type="button" onClick={()=>taskWorkspaceRef.current?.openManager()} className="flex min-h-9 items-center justify-center gap-2 rounded-xl border border-border px-3 py-2 text-xs hover:bg-bg-elevated"><ListTodo className="size-4" />{locale === "en" ? "Tasks" : "任務管理"}</button>
+          <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} onExpandedChange={setScheduleExpanded} />
+          <button type="button" style={{ gridColumn: 2, gridRow: scheduleExpanded ? 2 : 1 }} onClick={()=>taskWorkspaceRef.current?.openManager()} className="flex min-h-9 items-center justify-center gap-2 rounded-xl border border-border px-3 py-2 text-xs hover:bg-bg-elevated"><ListTodo className="size-4" />{locale === "en" ? "Tasks" : "任務管理"}</button>
           <TaskWorkspace ref={taskWorkspaceRef} bot={bot} connection={connection} locale={locale} onCompleted={task=>{
             const messageId=`aiot-task:${task.id}:${task.turn || 0}`;
             const desk=useDesk.getState();
             if(desk.connection.origin!==connection.origin || desk.connection.apiKey!==connection.apiKey || desk.messages.some(m=>m.messageId===messageId)) return;
             desk.upsertEventMessage({profile:bot.profile,conversation:bot.conversation,messageId,role:"assistant",text:locale === "en" ? `Task completed: ${task.title}\nOpen Tasks to view the result or continue the conversation.` : `任務已完成：${task.title}\n可從「任務管理」查看結果或繼續追問。`});
+            desk.markUnread(bot.id, true);
           }} />
         </div>}
-        {(forkArmed || independentArmed || chips.length > 0) && <div className="mx-auto flex max-w-2xl md:max-w-none items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs text-fg">{forkSelected ? <ForkIcon /> : <IndependentTaskIcon />}<span className="flex-1">{forkSelected ? (locale === "en" ? "Fork task · includes up to 7 recent messages" : "分岔任務 · 帶入最近最多 7 則訊息") : (locale === "en" ? "Independent task · this message and attachments only" : "獨立任務 · 只帶入本次訊息與附件")}</span>{chips.length === 0 && <button type="button" aria-label={locale === "en" ? "Cancel task mode" : "取消任務模式"} onClick={()=>{setForkArmed(false);setIndependentArmed(false);areaRef.current?.blur();blurTextInput();}}><X className="size-4" /></button>}</div>}
+        {(forkArmed || independentArmed || chips.length > 0) && <div className="task-routing-hint mx-auto flex max-w-2xl md:max-w-none items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs text-fg">{forkSelected ? <ForkIcon /> : <IndependentTaskIcon />}<span className="flex-1">{forkSelected ? (locale === "en" ? "Fork task · includes up to 7 recent messages" : "分岔任務 · 帶入最近最多 7 則訊息") : (locale === "en" ? "Independent task · this message and attachments only" : "獨立任務 · 只帶入本次訊息與附件")}</span>{chips.length === 0 && <button type="button" aria-label={locale === "en" ? "Cancel task mode" : "取消任務模式"} onClick={()=>{setForkArmed(false);setIndependentArmed(false);areaRef.current?.blur();blurTextInput();}}><X className="size-4" /></button>}</div>}
         {taskError && <p role="alert" className="mx-auto max-w-2xl md:max-w-none px-3 py-2 text-sm">{taskError}</p>}
         <ApprovalDock
           key={bot.id}
@@ -776,6 +803,20 @@ export function ChatView() {
           stopping={stopping}
           onStop={() => void interruptTurn()}
         />
+
+        {nativeQueue.length ? (
+          <details className="mx-3 mb-1 rounded-xl border border-border bg-bg-elevated/80 px-3 py-2">
+            <summary className="cursor-pointer text-xs text-muted">{locale === "en" ? `Queue (${nativeQueue.length})` : `佇列（${nativeQueue.length}）`}</summary>
+            <ol className="mt-2 space-y-2">
+              {nativeQueue.map((item, index) => (
+                <li key={item.id} className="flex gap-2 text-xs">
+                  <span className="text-subtle">{index + 1}</span>
+                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{item.text}</span>
+                </li>
+              ))}
+            </ol>
+          </details>
+        ) : null}
 
         <form
           onSubmit={(e) => {
@@ -837,7 +878,7 @@ export function ChatView() {
               key={botId}
               value={draft}
               rows={1}
-              disabled={!live || !bot.available || (blocked && !forkArmed && !independentArmed && chips.length === 0) || creatingTask}
+              disabled={!live || !bot.available || (blocked && !nativeQueueOn && !forkArmed && !independentArmed && chips.length === 0) || creatingTask}
               onChange={(e) => {
                 const el = e.target;
                 setDraft(botId, el.value);

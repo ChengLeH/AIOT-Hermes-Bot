@@ -49,16 +49,18 @@ export function createEncryptedStateStorage(input: {
   vault: EncryptedStorageVault;
   legacy?: LegacyStorage | null;
 }): StateStorage {
-  let queue: Promise<unknown> = Promise.resolve();
+  const queues = new Map<string, Promise<unknown>>();
   const blockedWrites = new Set<string>();
-  const serialized = <T>(operation: () => Promise<T>): Promise<T> => {
-    const next = queue.then(operation, operation);
-    queue = next.catch(() => undefined);
+  const serialized = <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+    const next = (queues.get(name) ?? Promise.resolve()).then(operation, operation);
+    const settled = next.catch(() => undefined);
+    queues.set(name, settled);
+    void settled.then(() => { if (queues.get(name) === settled) queues.delete(name); });
     return next;
   };
 
   return {
-    getItem: (name) => serialized(async () => {
+    getItem: (name) => serialized(name, async () => {
       try {
         const record = await input.vault.getRecord(name);
         if (record) {
@@ -95,14 +97,14 @@ export function createEncryptedStateStorage(input: {
         return null;
       }
     }),
-    setItem: (name, value) => serialized(async () => {
+    setItem: (name, value) => serialized(name, async () => {
       if (blockedWrites.has(name)) throw new Error("Encrypted browser storage is locked after a failed read");
       const key = await input.vault.getKey(true);
       if (!key) throw new Error("Encrypted browser storage unavailable");
       await input.vault.putRecord(name, await seal(key, input.origin, name, value));
       try { input.legacy?.removeItem(name); } catch { /* ciphertext is authoritative */ }
     }),
-    removeItem: (name) => serialized(async () => {
+    removeItem: (name) => serialized(name, async () => {
       await input.vault.deleteRecord(name);
       input.legacy?.removeItem(name);
       blockedWrites.delete(name);

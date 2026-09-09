@@ -9,7 +9,7 @@ function fixture() {
   const stored = new Map();
   const calls = [];
   let responder = () => ({ access_token: "secret-access", refresh_token: "secret-refresh", token_type: "Bearer", provider: "oidc", expires_at: time / 1000 + 3600 });
-  let bootstrapResponder = url => new Response(JSON.stringify({ auth_required: true }), { headers: { 'content-type': 'application/json' } });
+  let bootstrapResponder = _url => new Response(JSON.stringify({ auth_required: true }), { headers: { 'content-type': 'application/json' } });
   const auth = createSessionAuth({
     now: () => time,
     read: async (key) => structuredClone(stored.get(key)),
@@ -210,4 +210,20 @@ test('legacy approval timeout uses only the official bootstrapped session token'
   assert.equal(await f.auth.approvalTimeout(f.owner, 'demo'), 0);
   assert.equal(configHeaders['X-Hermes-Session-Token'], secret);
   assert.equal(configHeaders.Authorization, undefined);
+});
+
+test('server-only GET stays on the authenticated Dashboard origin and never exposes its bearer', async () => {
+  const f=fixture();await f.auth.finish({state:f.start().state,code:'code'});
+  const gets=[];
+  f.bootstrap((url,init)=>{gets.push({url,init});return url.endsWith('/api/status')
+    ? Response.json({auth_required:true})
+    : Response.json({messages:[{role:'tool',content:'private'}]});});
+  const response=await f.auth.get(f.owner,'/api/sessions/task/messages?limit=1','application/json');
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{messages:[{role:'tool',content:'private'}]});
+  assert.equal(gets.at(-1).url,'https://dashboard.example/api/sessions/task/messages?limit=1');
+  assert.equal(gets.at(-1).init.headers.Authorization,'Bearer secret-access');
+  await assert.rejects(f.auth.get(f.owner,'https://evil.example/api/messages'));
+  await assert.rejects(f.auth.get(f.owner,'//evil.example/api/messages'));
+  assert.doesNotMatch(JSON.stringify(await f.auth.status(f.owner)),/secret-access/);
 });

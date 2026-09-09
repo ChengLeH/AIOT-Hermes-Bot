@@ -4,10 +4,18 @@ import { test } from "node:test";
 import { vapidToBytes } from "./vapid.ts";
 import { pushSubscribePayload, sanitizeVisiblePush } from "./push-payload.ts";
 import { approvalDeepLink, genericApprovalNotice } from "./approvals.ts";
+import { applicationServerKeyMatches } from "./push-key.ts";
 
 test("vapid public key decodes from url-safe base64", () => {
   const bytes = vapidToBytes("AQID");
   assert.deepEqual([...bytes], [1, 2, 3]);
+});
+
+test("push subscription keys must match byte-for-byte before reuse", () => {
+  const expected = new Uint8Array([1, 2, 3]);
+  assert.equal(applicationServerKeyMatches(expected.buffer, expected), true);
+  assert.equal(applicationServerKeyMatches(new Uint8Array([1, 2, 4]).buffer, expected), false);
+  assert.equal(applicationServerKeyMatches(null, expected), false);
 });
 
 test("bot messages payload is only profile, conversation, text", () => {

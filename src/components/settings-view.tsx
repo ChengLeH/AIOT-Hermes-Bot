@@ -1,3 +1,4 @@
+import { BackgroundSettings } from "./background-settings";
 import { useEffect, useState } from "react";
 import { Bell, BellOff, Check, Loader2, Smartphone } from "lucide-react";
 import { getBotEvents, getBotProfiles } from "@/lib/native-bot";
@@ -46,7 +47,7 @@ export function SettingsView() {
     try {
       const origin = normalizeHttpsOrigin(connection.origin);
       setConnection({ origin, apiKey: connection.apiKey });
-      const [catalog, events] = await Promise.all([
+      const [catalog, _events] = await Promise.all([
         getBotProfiles(origin, connection.apiKey),
         getBotEvents(origin, connection.apiKey, 0),
       ]);
@@ -74,7 +75,7 @@ export function SettingsView() {
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-y-auto bg-bg px-5 pt-4 pb-4">
+    <section className="app-theme-surface flex h-full min-h-0 flex-col overflow-y-auto bg-bg px-5 pt-4 pb-4">
       <header className="mb-6">
         <h1 className="title-glyph font-display text-2xl font-semibold">{t(locale, "settings.title")}</h1>
       </header>
@@ -135,6 +136,8 @@ export function SettingsView() {
           label={t(locale, "settings.language")}
         />
       </section>
+
+      <BackgroundSettings locale={locale} />
 
       <PushPanel origin={connection.origin} apiKey={connection.apiKey} locale={locale} />
 
@@ -224,7 +227,7 @@ function PushPanel({
           }
         }
         if (!cancelled) setId(found);
-      } catch (err) {
+      } catch {
         if (!cancelled) setNote(t(locale, "push.serviceError"));
       } finally {
         if (!cancelled) setChecking(false);
@@ -233,7 +236,7 @@ function PushPanel({
     return () => {
       cancelled = true;
     };
-  }, [origin, apiKey, ready]);
+  }, [origin, apiKey, ready, locale]);
 
   async function enable() {
     setBusy(true);

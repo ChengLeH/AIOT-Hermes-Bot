@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from "react";
+import { Download, FileText } from "lucide-react";
 import { highlightPieces } from "./chat-search";
 import { codeTokens } from "./code-highlight";
 import { t, type Locale } from "./locale";
+import { remoteAssetFromUrl } from "./session-output-media";
 
 export function Markdown({
   text,
@@ -23,7 +25,7 @@ export function Markdown({
           return (
             <ul key={i}>
               {b.items.map((item, j) => (
-                <li key={j}>{inline(item, query)}</li>
+                <li key={j}>{inline(item, query, locale)}</li>
               ))}
             </ul>
           );
@@ -32,7 +34,7 @@ export function Markdown({
           return (
             <ol key={i}>
               {b.items.map((item, j) => (
-                <li key={j}>{inline(item, query)}</li>
+                <li key={j}>{inline(item, query, locale)}</li>
               ))}
             </ol>
           );
@@ -40,13 +42,13 @@ export function Markdown({
         if (b.type === "h") {
           return (
             <p key={i} className={`md-h md-h${b.level}`}>
-              {inline(b.text, query)}
+              {inline(b.text, query, locale)}
             </p>
           );
         }
         return (
           <p key={i} className="md-p">
-            {inline(b.text, query)}
+            {inline(b.text, query, locale)}
           </p>
         );
       })}
@@ -135,8 +137,31 @@ function mark(text: string, query: string, key: string): ReactNode {
   );
 }
 
-function inline(src: string, query = ""): ReactNode[] {
-  const tokens = src.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g);
+function RemoteResultAsset({ value, locale }: { value: string; locale?: Locale | null }) {
+  const asset = remoteAssetFromUrl(value);
+  if (!asset) return null;
+  if (asset.kind === "image") {
+    return (
+      <span className="remote-result-asset file-card">
+        <img src={asset.url} alt={asset.name} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+        <a href={asset.url} download={asset.name} target="_blank" rel="noreferrer noopener" referrerPolicy="no-referrer">
+          <Download className="size-3" />
+          {t(locale, "chat.download")}
+        </a>
+      </span>
+    );
+  }
+  return (
+    <a className="remote-result-file file-card" href={asset.url} download={asset.name} target="_blank" rel="noreferrer noopener" referrerPolicy="no-referrer">
+      <FileText className="size-4" />
+      <span>{asset.name}</span>
+      <Download className="size-3" />
+    </a>
+  );
+}
+
+function inline(src: string, query = "", locale?: Locale | null): ReactNode[] {
+  const tokens = src.split(/(!\[[^\]]*\]\(https?:[^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^)]+\)|https?:\/\/[^\s<>()]+)/g);
   return tokens.map((tok, i) => {
     if (tok.startsWith("**") && tok.endsWith("**") && tok.length > 4) {
       return <strong key={i}>{mark(tok.slice(2, -2), query, `b${i}`)}</strong>;
@@ -147,6 +172,11 @@ function inline(src: string, query = ""): ReactNode[] {
     if (tok.startsWith("*") && tok.endsWith("*") && tok.length > 2) {
       return <em key={i}>{mark(tok.slice(1, -1), query, `e${i}`)}</em>;
     }
+    const image = /^!\[[^\]]*\]\((https?:[^)]+)\)$/.exec(tok);
+    if (image) {
+      const asset = remoteAssetFromUrl(image[1]);
+      if (asset?.kind === "image") return <RemoteResultAsset key={i} value={image[1]} locale={locale} />;
+    }
     const link = /^\[([^\]]+)\]\((https?:[^)]+)\)$/.exec(tok);
     if (link) {
       return (
@@ -155,6 +185,8 @@ function inline(src: string, query = ""): ReactNode[] {
         </a>
       );
     }
+    const asset = remoteAssetFromUrl(tok);
+    if (asset) return <RemoteResultAsset key={i} value={tok} locale={locale} />;
     return <span key={i}>{mark(tok, query, `t${i}`)}</span>;
   });
 }
