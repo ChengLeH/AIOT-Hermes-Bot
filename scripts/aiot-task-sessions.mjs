@@ -320,6 +320,12 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
     if (result.pending_approval) { task.pending = pending(result.pending_approval, 'approval', task.pending?.requestId === result.pending_approval.request_id ? task.pending.receivedAt : now()); task.status = 'waiting_approval'; queueApproval(task); }
     else if (result.pending_clarify) { task.pending = pending(result.pending_clarify, 'clarify', task.pending?.requestId === result.pending_clarify.request_id ? task.pending.receivedAt : now()); task.status = 'waiting_input'; }
     else if (result.running) { clearPending(task); task.status = 'running'; }
+    else if (ACTIVE.has(task.status) && task.interruptRequested && result.running === false && !result.inflight && !result.queued) {
+      // Resume is authoritative idle proof when a terminal event was lost or
+      // interrupt was accepted after the worker had already become idle.
+      await settle(task, '', 'interrupted');
+      return client;
+    }
     else if (ACTIVE.has(task.status) && result.inflight?.status === 'error') {
       await settle(task, typeof result.inflight.assistant === 'string' ? result.inflight.assistant : '', 'failed');
       return client;
@@ -451,6 +457,8 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
             state.deletedTasks = state.deletedTasks.filter(candidate => candidate !== receipt);
             throw error;
           }
+          boundClients.delete(task.id);
+          retryAfter.delete(task.id);
           deletedIds.push(task.id);
         }
         return { deletedIds, failedIds };

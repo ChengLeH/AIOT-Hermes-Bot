@@ -81,7 +81,7 @@ export function TaskManager({
           data-expanded={expanded}
           data-dragging={dragHeight !== null}
           className="task-manager-sheet fixed bottom-0 left-1/2 z-[121] flex w-full max-w-xl -translate-x-1/2 flex-col rounded-t-3xl border border-border bg-bg text-fg shadow-panel outline-none"
-          style={{ paddingBottom: "env(safe-area-inset-bottom)", ...(dragHeight !== null ? { height: dragHeight } : {}) }}
+          style={{ paddingBottom: "var(--app-safe-bottom, env(safe-area-inset-bottom))", ...(dragHeight !== null ? { height: dragHeight } : {}) }}
           onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();

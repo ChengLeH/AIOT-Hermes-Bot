@@ -17,8 +17,40 @@ import type { Locale } from "./locale";
 import { mergeApproval, sanitizeApproval, type ApprovalCard } from "./approvals";
 import { sanitizeMessage, mergeAttachmentMeta } from "./history";
 import { sanitizeAttachment } from "./attachment-preview";
+import { mergeTaskCompletionMessages, type TaskCompletionInput } from "./task-completion";
 
 export type DeskView = "roster" | "chat" | "settings";
+
+type EventMessageInput = {
+  profile: string;
+  conversation: string;
+  messageId: string;
+  role: "user" | "assistant";
+  text: string;
+  createdAt?: number;
+  historical?: boolean;
+  keepRole?: boolean;
+  streaming?: boolean;
+  attachments?: AttachmentDescriptor[];
+};
+
+function mergeEventMessage(messages: ChatMessage[], botId: string, { messageId, role, text, createdAt, historical, keepRole, streaming, attachments }: EventMessageInput): ChatMessage[] {
+  const existing = messages.find((message) => message.botId === botId && message.messageId === messageId);
+  if (existing) return messages.map((message) =>
+    message.id === existing.id && message.botId === botId
+      ? { ...message, content: text,
+        ...((historical || isImportedSessionMessage(messageId)) && typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
+        streaming, pending: false, role: keepRole ? message.role : role, attachments: mergeAttachmentMeta(message.attachments, attachments) }
+      : message,
+  );
+  const pending = role === "user" ? messages.find((message) => message.botId === botId && message.pending && message.content === text) : undefined;
+  if (pending) return messages.map((message) => message.id === pending.id
+    ? { ...message, messageId, content: text, pending: false, attachments: mergeAttachmentMeta(message.attachments, attachments) }
+    : message);
+  return [...messages, { id: messageId, botId, role, content: text, streaming,
+    createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) ? createdAt : Date.now(), messageId,
+    attachments: mergeAttachmentMeta(undefined, attachments) }];
+}
 
 type DeskState = {
   onboarded: boolean;
@@ -62,18 +94,9 @@ type DeskState = {
   restoreDesk: (result: RestoreResult) => void;
   ensureConversation: (botId: string) => string;
   setConversation: (botId: string, conversation: string) => void;
-  upsertEventMessage: (input: {
-    profile: string;
-    conversation: string;
-    messageId: string;
-    role: "user" | "assistant";
-    text: string;
-    createdAt?: number;
-    historical?: boolean;
-    keepRole?: boolean;
-    streaming?: boolean;
-    attachments?: AttachmentDescriptor[];
-  }) => void;
+  upsertEventMessage: (input: EventMessageInput) => void;
+  upsertSessionHistoryMessages: (profile: string, conversation: string, input: EventMessageInput[]) => void;
+  upsertTaskCompletionMessages: (input: TaskCompletionInput[]) => void;
   adoptPendingUser: (botId: string, text: string, messageId: string) => void;
   dropPendingUser: (botId: string, localId?: string) => void;
   pushPendingUser: (botId: string, text: string, attachments?: AttachmentDescriptor[]) => string;
@@ -242,53 +265,18 @@ export const useDesk = create<DeskState>()(
         const bot = get().bots.find((b) => b.profile === profile);
         if (!bot) return;
         void conversation;
-        set((s) => {
-          const existing = s.messages.find((m) => m.botId === bot.id && m.messageId === messageId);
-          if (existing) {
-            return {
-              messages: s.messages.map((m) =>
-                m.id === existing.id && m.botId === bot.id
-                  ? {
-                      ...m,
-                      content: text,
-                      ...((historical || isImportedSessionMessage(messageId)) && typeof createdAt === "number" && Number.isFinite(createdAt) ? { createdAt } : {}),
-                      streaming,
-                      pending: false,
-                      role: keepRole ? m.role : role,
-                      attachments: mergeAttachmentMeta(m.attachments, attachments),
-                    }
-                  : m,
-              ).sort((a, b) => a.createdAt - b.createdAt),
-            };
-          }
-          const pending = role === "user"
-            ? s.messages.find((m) => m.botId === bot.id && m.pending && m.content === text)
-            : undefined;
-          if (pending) {
-            return {
-              messages: s.messages.map((m) =>
-                m.id === pending.id
-                  ? { ...m, messageId, content: text, pending: false, attachments: mergeAttachmentMeta(m.attachments, attachments) }
-                  : m,
-              ),
-            };
-          }
-          return {
-            messages: [
-              ...s.messages,
-              {
-                id: messageId,
-                botId: bot.id,
-                role,
-                content: text,
-                streaming,
-                createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) ? createdAt : Date.now(),
-                messageId,
-                attachments: mergeAttachmentMeta(undefined, attachments),
-              },
-            ].sort((a, b) => a.createdAt - b.createdAt),
-          };
-        });
+        set((s) => ({ messages: mergeEventMessage(s.messages, bot.id, { profile, conversation, messageId, role, text, createdAt, historical, keepRole, streaming, attachments }).sort((a, b) => a.createdAt - b.createdAt) }));
+      },
+      upsertSessionHistoryMessages: (profile, conversation, input) => {
+        const bot = get().bots.find((item) => item.profile === profile);
+        if (!bot || !input.length) return;
+        void conversation;
+        set((s) => ({ messages: input.reduce((messages, row) => mergeEventMessage(messages, bot.id, row), s.messages).sort((a, b) => a.createdAt - b.createdAt) }));
+      },
+      upsertTaskCompletionMessages: (input) => {
+        const patch = mergeTaskCompletionMessages(get(), input);
+        // Avoid even scheduling persistence for a replay of existing summaries.
+        if (patch) set(patch);
       },
       adoptPendingUser: (botId, text, messageId) =>
         set((s) => ({

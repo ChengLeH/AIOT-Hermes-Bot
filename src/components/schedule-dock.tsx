@@ -7,11 +7,14 @@ import {
   activeExecution,
   executionKey,
   freshTerminal,
+  jobsAvailabilityAfterProbe,
+  type JobsAvailability,
   shouldRevealJob,
   type ScheduleJob,
 } from "@/lib/jobs";
 import { useDesk } from "@/lib/store";
 import type { Locale } from "@/lib/locale";
+import { overlayHistoryAction } from "@/lib/app-history";
 export type ScheduleDockHandle = { collapse: () => boolean };
 export const ScheduleDock = forwardRef<
   ScheduleDockHandle,
@@ -24,7 +27,7 @@ export const ScheduleDock = forwardRef<
   const botMenuClosedAt = useRef(0);
   const submitting = useRef(false);
   const [jobs, setJobs] = useState<ScheduleJob[]>([]);
-  const [available, setAvailable] = useState(false);
+  const [availability, setAvailability] = useState<JobsAvailability>("loading");
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -72,7 +75,14 @@ export const ScheduleDock = forwardRef<
   useImperativeHandle(ref, () => ({ collapse: () => collapse() }));
   useEffect(() => {
     const pop = () => {
-      if (window.history.state?.aiotScheduleDock !== profile) collapse(true);
+      const action = overlayHistoryAction(window.history.state, "aiotScheduleDock", profile, expandedRef.current);
+      if (action === "skip") {
+        queueMicrotask(() => {
+          if (window.history.state?.aiotScheduleDock === profile && !expandedRef.current) window.history.back();
+        });
+        return;
+      }
+      if (action === "close") collapse(true);
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape" && expandedRef.current) {
@@ -85,6 +95,11 @@ export const ScheduleDock = forwardRef<
     return () => {
       window.removeEventListener("popstate", pop);
       window.removeEventListener("keydown", key);
+      if (window.history.state?.aiotScheduleDock === profile) {
+        const state = { ...window.history.state };
+        delete state.aiotScheduleDock;
+        window.history.replaceState(state, "");
+      }
     };
   }, [profile, collapse]);
   useEffect(() => {
@@ -98,14 +113,14 @@ export const ScheduleDock = forwardRef<
         const res = await hermesFetch(url, { apiKey, timeoutMs: 6500, signal: controller.signal });
         if (disposed) return;
         if (!res.ok) {
-          setAvailable(false);
+          setAvailability((value) => jobsAvailabilityAfterProbe(value, false));
           return;
         }
         const raw = await res.json();
         if (disposed || !Array.isArray(raw.jobs)) return;
         const next = raw.jobs as ScheduleJob[];
-        setAvailable(true);
-        setJobs(next);
+        setAvailability((value) => jobsAvailabilityAfterProbe(value, true));
+        setJobs(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
         for (const job of next) {
           const key = executionKey(job);
           if (
@@ -125,7 +140,7 @@ export const ScheduleDock = forwardRef<
         oldJobs.current = next;
         initialized.current = true;
       } catch {
-        if (!disposed) setAvailable(false);
+        if (!disposed) setAvailability((value) => jobsAvailabilityAfterProbe(value, false));
       } finally {
         pending = false;
       }
@@ -194,7 +209,6 @@ export const ScheduleDock = forwardRef<
       "DELETE",
     );
   }
-  if (!available) return null;
   const labels = {
     claimed: en ? "Waiting to run" : "等待執行",
     running: en ? "Working" : "工作中",
@@ -222,7 +236,7 @@ export const ScheduleDock = forwardRef<
       >
         <button
           type="button"
-          className="approval-dock-heading"
+          className="approval-dock-heading task-navigation-button"
           onClick={() => (expanded ? collapse() : open())}
           aria-expanded={expanded}
         >
@@ -234,13 +248,15 @@ export const ScheduleDock = forwardRef<
             <CalendarClock size={16} />
           )}
           <span className="approval-dock-label">
-            <strong>{current?.name || `${status} (${jobs.length})`}</strong>
-            {current && <span role="status">{status}</span>}
+            <strong>{en ? "Schedules" : "排程工作"}</strong>
           </span>
-          {expanded ? <ChevronDown size={17} /> : <ChevronUp size={17} />}
         </button>
+      </div>
         {expanded && (
-          <div className="approval-dock-body schedule-body">
+          <div className={`approval-dock-body schedule-body${creating ? " schedule-body-creating" : ""}`}>
+            {availability === "unavailable" && (
+              <p role="status">{en ? "Schedules are temporarily unavailable. Retrying…" : "目前無法讀取排程，正在重試…"}</p>
+            )}
             {current && (
               <div
                 className={`schedule-result ${current.latest_execution?.status === "failed" ? "schedule-result-failed" : ""}`}
@@ -442,14 +458,21 @@ export const ScheduleDock = forwardRef<
                   aria-label={en ? "Task instructions" : "任務內容"}
                   placeholder={en ? "What should this Bot do?" : "要讓這位 Bot 做什麼？"}
                 />
-                <select
-                  aria-label={en ? "Frequency" : "頻率"}
-                  value={frequency}
-                  onChange={(e) => setFrequency(e.target.value)}
-                >
-                  <option value="once">{en ? "Once" : "單次"}</option>
-                  <option value="interval">{en ? "Recurring" : "重複執行"}</option>
-                </select>
+                <fieldset className="schedule-frequency" aria-label={en ? "Frequency" : "頻率"}>
+                  {(["once", "interval"] as const).map((value) => (
+                    <label key={value}>
+                      <span>{value === "once" ? (en ? "Once" : "單次") : (en ? "Recurring" : "重複執行")}</span>
+                      <input
+                        type="radio"
+                        name="frequency"
+                        value={value}
+                        checked={frequency === value}
+                        onChange={() => setFrequency(value)}
+                      />
+                      <span className="schedule-radio" aria-hidden="true" />
+                    </label>
+                  ))}
+                </fieldset>
                 {frequency === "once" ? (
                   <label>
                     {en ? "Run once at (your local time)" : "單次執行時間（你的當地時間）"}
@@ -483,7 +506,6 @@ export const ScheduleDock = forwardRef<
             {error && <p role="alert">{error}</p>}
           </div>
         )}
-      </div>
     </div>
   );
 });

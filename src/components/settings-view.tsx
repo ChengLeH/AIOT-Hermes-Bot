@@ -215,16 +215,19 @@ function PushPanel({
         if (cancelled) return;
         setStatus(st);
         let found = readPushId(origin);
-        if (!found && canRegisterServiceWorker()) {
+        if (canRegisterServiceWorker()) {
           const reg = await navigator.serviceWorker.getRegistration("/");
           const sub = await reg?.pushManager.getSubscription();
           if (sub?.endpoint) {
             const looked = await postPushLookup(origin, apiKey, sub.endpoint);
-            if (looked?.id) {
-              found = looked.id;
-              writePushId(origin, found);
-            }
+            found = looked?.id ?? "";
+          } else {
+            found = "";
           }
+          writePushId(origin, found);
+        } else if (found) {
+          found = "";
+          writePushId(origin, "");
         }
         if (!cancelled) setId(found);
       } catch {

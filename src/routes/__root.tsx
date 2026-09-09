@@ -41,7 +41,6 @@ export const Route = createRootRoute({
       },
       { rel: "icon", type: "image/png", sizes: "192x192", href: "/icon-192-v3.png" },
       { rel: "icon", type: "image/png", sizes: "512x512", href: "/icon-512-v3.png" },
-      { rel: "stylesheet", href: appCss },
       { rel: "manifest", href: "/manifest.webmanifest" },
       { rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -55,6 +54,8 @@ export const Route = createRootRoute({
   component: () => (
     <html lang="zh-Hant-TW" className="antialiased" data-app-layout="setup" suppressHydrationWarning>
       <head>
+        {/* App styling belongs to the document, not transient route head state. */}
+        <link rel="stylesheet" href={appCss} />
         <HeadContent />
       </head>
       <body className="bg-bg text-fg">

@@ -1,15 +1,18 @@
 # AIOT / Hermes Bot
 
-**v0.2.1 · your agent, in your pocket**
+**v0.2.2 · your agent, in your pocket**
 
 A familiar Bot conversation, with independent and forked Hermes Sessions for focused work. Connect your own Hermes deployment through a mobile PWA with attachments, approvals and notifications.
 
 熟悉的 Bot 對話，加上可獨立執行或承接脈絡的 Hermes Session。透過手機 PWA 連接自己的 Hermes，管理附件、批准與任務通知。
 
-[English / 繁體中文更新紀錄](CHANGELOG.md#021)
+[English / 繁體中文更新紀錄](CHANGELOG.md#022)
 
-![English v0.2.1 task manager and queue](docs/images/v021-queue-en.png)
-![繁體中文 v0.2.1 批准卡](docs/images/v021-approval-zh-Hant.png)
+![English v0.2.2 task manager and queue](docs/images/v022-queue-en.png)
+![繁體中文 v0.2.2 批准卡](docs/images/v022-approval-zh-Hant.png)
+
+**Known iPhone limitations:** on a real iPhone, the user reports a conversation jump followed by a white unstyled screen with an oversized logo when a completed Session syncs back to the Bot. Completion summaries now update in a single deduplicated batch, but real-device acceptance is still required. Synthetic WebKit and Chrome checks pass the history-isolation and animation-guard regressions, but they do not establish a real-iPhone fix. iPhone acceptance remains open. Installed mobile builds retry the native portrait lock; when the platform does not support it, AIOT shows a portrait-only fallback overlay. The manifest and native lock are platform hints or best-effort behavior, not a universal OS lock.
+**iPhone 已知限制：**使用者回報實機 iPhone 在 Session 完成同步回 Bot 時，對話先跳動，再出現白色未套樣式畫面與巨大 Logo。完成摘要已改成單次批次更新與去重，仍需實機驗收。合成 WebKit 與 Chrome 檢查已通過 history isolation 及 animation guard 回歸，但不能證明實機 iPhone 已修好；iPhone 驗收仍未完成。已安裝的行動版會重試原生直向鎖定；平台不支援時，AIOT 會顯示僅限直向的覆蓋提示。Manifest 與原生鎖定只是平台提示或盡力行為，不是所有作業系統都能強制鎖定直向。
 
 Previews use fictional profiles and messages, not private data or proof of backend execution.
 預覽使用虛構角色與訊息，不含私人資料，也不是後端執行證據。
@@ -70,6 +73,10 @@ Run the same Start launcher again to reopen an already running service. Use **St
 - Keep the public origin on Tailscale HTTPS and restrict access with your Tailnet ACLs. Do not expose port 8888 or the Hermes Bot port directly to the public internet.
 - Never commit `.aiot`, `.env`, logs, attachments, screenshots, browser data, or a real connection key.
 
+The same-origin guard limits browser cross-site requests; it is not authentication. Every private operation still requires the connection credential and task ownership checks. Downloadable Session artifacts must come from recognized Hermes tool results and are retrieved through the authenticated Hermes file service. Hermes remains the trust boundary for host filesystem access; AIOT does not provide an independent host filesystem sandbox.
+
+Manual **test notifications** bypass foreground suppression so they can be checked from Settings. Automated notification-policy checks cover foreground, background, closed-app, other-origin, and manual-test behavior. Ordinary replies remain silent at the system level while AIOT is visible; live device delivery still needs a real-device check.
+
 ### Troubleshooting
 
 - **Rotating the AIOT connection key:** managed Session tasks and the saved Dashboard sign-in are scoped to the resolved Hermes Bot target plus the exact Bearer connection key entered in AIOT (`SHA-256(target + "\n" + authorization)`). Changing that connection key or resolved target creates a new scope: old tasks and sign-in remain encrypted locally but are not automatically migrated or visible in the new scope. Sign in to Dashboard again for the new scope. Routine refresh of Dashboard access/refresh tokens does not change this scope.
@@ -87,15 +94,15 @@ Approval choices are supplied by Hermes; AIOT does not invent session or permane
 
 Schedules created by AIOT use Hermes 0.21.1's official `bot-chat:<profile>` delivery target, derived on the local server from the selected authenticated Bot. The browser cannot supply an arbitrary delivery target. Results return to that Bot's canonical chat; jobs created by an older AIOT version with local-only delivery are not replayed retroactively.
 
-Automated CI checks are not a fresh-machine installation test. Linux is validated separately against the published instructions after release; Windows and iPhone installation remain outside the v0.2.1 acceptance claim.
+GitHub CI runs the public-source scan, clean install, typecheck, automated suites, zero-warning lint, production build, and isolated Chromium browser regression. It does not establish live Hermes behavior, live notification delivery, iPhone behavior, Windows installation, or a fresh Linux installation. Linux is validated separately against the published instructions after release; Windows and iPhone installation remain outside the v0.2.2 acceptance claim.
 
-![English Session artifact preview](docs/images/v021-files-en.png)
+![English Session artifact preview](docs/images/v022-files-en.png)
 
 ---
 
 ## 繁體中文
 
-![AIOT 繁體中文任務管理與佇列](docs/images/v021-queue-zh-Hant.png)
+![AIOT v0.2.2 繁體中文任務管理與佇列](docs/images/v022-queue-zh-Hant.png)
 
 此圖是使用虛構內容的 UI 示意圖，不是實際對話截圖，也不代表後端執行證據。
 
@@ -153,6 +160,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 - 外部網址只使用 Tailscale HTTPS，並用 Tailnet ACL 限制可連線的裝置。不要把 8888 或 Hermes Bot port 直接公開到網際網路。
 - 請勿提交 `.aiot`、`.env`、日誌、附件、截圖、瀏覽器資料或真實連線金鑰。
 
+同源檢查用於限制瀏覽器跨站請求，不取代身分驗證；私人操作仍須通過連線金鑰與任務歸屬檢查。Session 附件必須來自可辨識的 Hermes 工具結果，並透過已登入的 Hermes 檔案服務取得。主機檔案存取的信任邊界仍在 Hermes，AIOT 不提供獨立的主機檔案沙箱。
+
+手動「測試通知」不受前景靜音限制，可直接在設定頁檢查。自動化通知政策檢查涵蓋前景、背景、App 關閉、其他來源及手動測試情境。一般回覆在 AIOT 顯示於前景時，仍不另外跳系統通知；實機通知投遞仍需另外驗證。
+
 ### 常見問題
 
 - **更換 AIOT 連線金鑰：**受管理的 Session 任務與保存的 Dashboard 登入，依解析後的 Hermes Bot 目的地及填入 AIOT 的完整 Bearer 連線金鑰分組（`SHA-256(target + "\n" + authorization)`）。更換這把連線金鑰或解析後的目的地，就會使用新的分組；舊任務與登入資料仍加密留在本機，不會自動搬移，也不會顯示於新分組。請為新分組重新登入 Dashboard。Dashboard access／refresh token 的正常更新不會改變此分組。
@@ -170,13 +181,13 @@ AIOT 在前景時，該裝置改用介面內的新訊息提示，不顯示系統
 
 AIOT 新建的排程使用 Hermes 0.21.1 官方 `bot-chat:<profile>` 投遞目標；目標由本機服務依已驗證的 Bot 選擇產生，瀏覽器不能指定任意投遞位置。結果會回到該 Bot 的 canonical chat；舊版以 local-only 建立的排程不會被追溯重播。
 
-CI 自動檢查不等於全新電腦安裝驗證。發布後會另依公開說明驗證 Linux；Windows 與 iPhone 安裝不列入 v0.2.1 的驗收聲明。
+GitHub CI 會執行公開來源盤點、乾淨安裝、型別檢查、自動化測試、零警告 lint、正式建置及隔離的 Chromium 瀏覽器回歸；這些檢查不等於真實 Hermes、實機通知投遞、iPhone、Windows 或全新 Linux 電腦安裝驗證。發布後會另依公開說明驗證 Linux；Windows 與 iPhone 安裝不列入 v0.2.2 的驗收聲明。
 
-![繁體中文 Session 附件預覽](docs/images/v021-files-zh-Hant.png)
+![繁體中文 Session 附件預覽](docs/images/v022-files-zh-Hant.png)
 
-See [v0.2.1 release notes / 更新內容](docs/releases/v0.2.1.md).
+See [v0.2.2 release notes / 更新內容](docs/releases/v0.2.2.md).
 
-![English Session approval](docs/images/v021-approval-en.png)
+![English Session approval](docs/images/v022-approval-en.png)
 
 ## License
 

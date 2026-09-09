@@ -34,11 +34,17 @@ function localNativeRunsService() {
     loadTaskResultContext: (target,authorization,profile,conversation)=>localSessionService().resultContext(target,authorization,profile,conversation) });
 }
 
-function samePageOrigin(req) {
+export function samePageOrigin(req) {
   const caller = req.headers.origin;
-  if (!caller) return true;
   const host = req.headers.host;
-  return caller === `http://${host}` || caller === `https://${host}`;
+  if (caller) return caller === `http://${host}` || caller === `https://${host}`;
+  const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite) return fetchSite === 'same-origin' || fetchSite === 'none';
+  return isLoopbackAddress(req.socket?.remoteAddress);
+}
+
+function isLoopbackAddress(address = '') {
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
 }
 
 function exactHttpsOrigin(value) {
@@ -242,19 +248,27 @@ async function localSetup(req, res, incoming) {
 
 function middleware() {
   return async (req, res, next) => {
+    preventStaleAppShell(req, res);
     const incoming = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-    if (incoming.pathname.startsWith('/api/bot/sessions/') || incoming.pathname === '/__aiot/session-callback') {
+    if (incoming.pathname === '/__aiot/session-callback') {
+      const base=readRuntimeTarget();
+      if(!base) return json(res,503,{error:'aiot_not_configured'});
+      return localSessionService().handle(req,res,base);
+    }
+    if (incoming.pathname.startsWith('/api/bot/sessions/')) {
       if (!samePageOrigin(req)) return json(res,403,{error:'origin_rejected'});
       const base=readRuntimeTarget();
       if(!base) return json(res,503,{error:'aiot_not_configured'});
       return localSessionService().handle(req,res,base);
     }
     if (incoming.pathname === "/api/bot/native" || incoming.pathname.startsWith("/api/bot/native/")) {
+      if (!samePageOrigin(req)) return json(res, 403, { error: "origin_rejected" });
       const base = readRuntimeTarget();
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
       return localNativeRunsService().handle(req, res, base);
     }
     if (incoming.pathname === "/api/bot" || incoming.pathname.startsWith("/api/bot/")) {
+      if (!samePageOrigin(req)) return json(res, 403, { error: "origin_rejected" });
       const base = readRuntimeTarget();
       if (!base) return json(res, 503, { error: "aiot_not_configured" });
       return proxyRequest(req, res, botTargetUrl(base, incoming));
@@ -297,6 +311,15 @@ function middleware() {
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : "proxy_failed" }));
     }
   };
+}
+
+// Builds replace hashed assets. Never restore an HTTP-cached entry document
+// whose stylesheet and scripts may belong to a previous deployment.
+export function preventStaleAppShell(req, res) {
+  const path = (req.url || "/").split("?")[0];
+  if ((req.method === "GET" || req.method === "HEAD") && (path === "/" || path === "/index.html")) {
+    res.setHeader("cache-control", "no-store");
+  }
 }
 
 // Connect/Vite does not observe rejected promises from async middleware. Keep

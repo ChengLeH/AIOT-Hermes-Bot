@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { SESSION_FRAME_MAX_BYTES } from './aiot-session-service.mjs';
 import { SessionRpcClient } from './aiot-session-rpc.mjs';
 
 class FakeSocket extends EventTarget {
@@ -111,4 +112,17 @@ test('transport close reports disconnect once immediately', async () => {
   await client.connect();
   client.socket.close(); client.close();
   assert.equal(disconnected, 1);
+});
+
+
+test('attachment-heavy resume exceeds the old 15 MiB budget while remaining bounded', async () => {
+  const client = new SessionRpcClient({ ...options, maxFrameBytes: SESSION_FRAME_MAX_BYTES });
+  await client.connect();
+  const pending = client.request('session.resume', { session_id: 'owned' });
+  await tick();
+  client.socket.frame({ jsonrpc: '2.0', id: client.socket.sent[0].id, result: { history: 'x'.repeat(16 * 1024 * 1024) } });
+  assert.equal((await pending).history.length, 16 * 1024 * 1024);
+  assert.equal(client.closed, false);
+  client.socket.frame('x'.repeat(SESSION_FRAME_MAX_BYTES + 1));
+  assert.equal(client.closed, true);
 });

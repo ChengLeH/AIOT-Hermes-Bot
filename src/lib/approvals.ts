@@ -228,3 +228,8 @@ export function approvalExpiresInMs(card: ApprovalCard, now = Date.now()): numbe
   if (!["pending", "error", "submitting"].includes(card.status) || !card.timeoutSeconds || !Number.isFinite(card.timeoutSeconds)) return null;
   return Math.max(0, card.createdAt + card.timeoutSeconds * 1000 - now);
 }
+
+/** Only a rendered approval dock replaces the normal work ticker. */
+export function isVisibleActiveApproval(card: Pick<ApprovalCard, "hidden" | "status">): boolean {
+  return !card.hidden && ["pending", "submitting", "error"].includes(card.status);
+}

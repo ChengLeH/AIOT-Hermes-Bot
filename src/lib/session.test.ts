@@ -15,7 +15,7 @@ const ORIGIN = "https://machine.example.ts.net";
 const CONV_A = "11111111-1111-4111-8111-111111111111";
 const CONV_B = "22222222-2222-4222-8222-222222222222";
 
-test("reloading selected contact ignores old device-local conversation ids", () => {
+test("relaunch starts at contacts while preserving drafts and ignoring old conversation ids", () => {
   const storage = memoryStorage();
   const stored = captureDeskSession({
     origin: ORIGIN,
@@ -31,7 +31,7 @@ test("reloading selected contact ignores old device-local conversation ids", () 
     profiles: [{ name: "alpha" }, { name: "beta" }],
     stored: roundtrip,
   });
-  assert.equal(restored.view, "chat");
+  assert.equal(restored.view, "roster");
   assert.equal(restored.profile, "alpha");
   assert.equal(restored.conversation, null);
   assert.deepEqual(restored.conversations, {});
@@ -138,4 +138,9 @@ test("desk no longer mints browser conversation UUIDs", () => {
   }
   assert.equal(store.includes("p.canonicalSessionId"), true);
   assert.equal(send.includes("ack.conversation"), false);
+});
+
+for (const view of ["settings", "chat"] as const) test(`relaunch never restores the old ${view} screen`, () => {
+  const restored = restoreAfterProfiles({ profiles: [{ name: "alpha" }], stored: captureDeskSession({ origin: ORIGIN, view, profile: "alpha", conversation: null, conversations: {}, drafts: {} }) });
+  assert.equal(restored.view, "roster");
 });

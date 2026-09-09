@@ -33,6 +33,10 @@
   --shadow-panel: 0 24px 60px color-mix(in oklab, black 45%, transparent);
 }
 
+:root {
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 @layer base {
   html {
     background: var(--color-bg);
@@ -71,8 +75,8 @@
   }
 
   html[data-app-layout="desk"] body {
-    position: fixed;
-    top: var(--app-top, 0px);
+    position: relative;
+    top: auto;
     right: 0;
     left: 0;
     bottom: auto;
@@ -108,6 +112,16 @@
   }
 }
 
+.chat-status-header {
+  min-height: 4.1rem;
+}
+
+/* The shifted fixed shell must remain inside its ancestor's clipping box. */
+html[data-app-layout="desk"][data-ios-status-offset="true"] body {
+  height:calc(var(--app-height) + var(--app-top));
+  max-height:calc(var(--app-height) + var(--app-top));
+}
+
 [data-swatch="moss"] { --bot: #6a8a7c; --bot-eye: #6a8a7c; --bot-ink: #6a8a7c; }
 [data-swatch="steel"] { --bot: #6a7a88; --bot-eye: #6a7a88; --bot-ink: #6a7a88; }
 [data-swatch="clay"] { --bot: #8a6e6e; --bot-eye: #8a6e6e; --bot-ink: #8a6e6e; }
@@ -131,7 +145,7 @@
   overflow: hidden;
   touch-action: pan-y;
   padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-bottom: var(--app-safe-bottom);
   background:
     radial-gradient(1200px 480px at 50% -120px, color-mix(in oklab, var(--color-fg) 6%, transparent), transparent 70%),
     var(--color-bg);
@@ -292,6 +306,17 @@
   pointer-events: none;
   overflow: visible;
   animation: launch-fade 2.35s ease forwards;
+}
+
+/* Cover viewport settling without moving the frozen launch logo geometry. */
+.launch-screen::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  height: max(var(--launch-height), calc(var(--app-height, 100svh) + var(--app-top, 0px)));
+  background: #000;
+  z-index: -1;
+  pointer-events: none;
 }
 
 .launch-lockup {
@@ -788,7 +813,13 @@ li:has(> .approval-dismissed) { display: none; }
 .schedule-idle.approval-dock-compact { background:transparent; border-color:transparent; box-shadow:none; }
 .schedule-idle.approval-dock-compact .approval-dock-heading { min-height:32px; padding-block:5px; opacity:.75; }
 .schedule-idle .approval-dock-label strong { font-size:.8rem; font-weight:500; }
-.schedule-form select { width:100%; padding:9px; background:var(--background); color:inherit; border:1px solid var(--border); border-radius:8px; }
+.schedule-frequency { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin:0; padding:0; border:1px solid rgba(215,229,221,.18); border-radius:12px; overflow:hidden; }
+.schedule-frequency label { position:relative; display:flex; min-height:42px; align-items:center; justify-content:space-between; padding:8px 12px; cursor:pointer; }
+.schedule-frequency label + label { border-inline-start:1px solid rgba(215,229,221,.16); }
+.schedule-frequency input { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+.schedule-radio { width:18px; height:18px; flex:0 0 18px; border:2px solid #eef3f5b8; border-radius:999px; box-shadow:inset 0 0 0 4px transparent; }
+.schedule-frequency input:checked + .schedule-radio { border-color:#fff; background:#fff; box-shadow:inset 0 0 0 4px #314657,0 0 8px #fff9,0 0 15px #b9dcff66; }
+.schedule-frequency input:focus-visible + .schedule-radio { outline:2px solid #dbe8ff; outline-offset:2px; }
 
 .schedule-result-failed { color: #c58b90; }
 .schedule-prompt { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; max-height: 10rem; overflow-y: auto; font-size: .85rem; }
@@ -835,48 +866,109 @@ li:has(> .approval-dismissed) { display: none; }
 @keyframes work-label-sweep { from { mask-position:-80% 0; } to { mask-position:181% 0; } }
 @media(prefers-reduced-motion:reduce) { .work-label-glow { animation:none; display:none; } }
 
-/* Shared navigation row; expanded schedules retain the full responsive width. */
-.task-navigation { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; width:100%; max-width:696px; margin:0 auto; padding:12px; align-items:start; }
-.task-navigation > .schedule-slot { grid-column:1; grid-row:1; min-width:0; padding:0; margin:0; max-width:none; }
+/* The two controls stay fixed; schedule details open upward without reflowing them. */
+.task-navigation { position:relative; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; width:100%; max-width:696px; margin:0 auto; padding:12px; align-items:end; }
+.task-navigation > .schedule-slot { position:relative; grid-column:1; grid-row:1; min-width:0; padding:0; margin:0; max-width:none; }
 .task-navigation > button { grid-column:2; grid-row:1; }
-.task-navigation > .schedule-slot-expanded { grid-column:1 / -1; }
-.task-navigation > .schedule-slot-expanded + button { grid-column:2; grid-row:2; }
+.task-navigation > button { opacity:.75; }
 .task-navigation .approval-dock-heading { min-width:0; }
 .task-navigation .approval-dock-label { min-width:0; }
-.task-navigation > .schedule-slot .approval-dock-compact,
+.task-navigation-button { display:flex; align-items:center; justify-content:center; gap:8px; font-size:.8rem; font-weight:500; line-height:1; text-align:center; }
+.task-navigation > .schedule-slot .approval-dock,
 .task-navigation > button {
+  height:44px;
   min-height:44px;
-  border-color:rgba(215,229,221,.18);
+  border-color:rgba(225,229,227,.24);
   border-radius:12px;
-  background:rgba(18,20,19,.48);
-  box-shadow:inset 0 1px rgba(255,255,255,.035),0 0 14px rgba(213,232,222,.035);
-  -webkit-backdrop-filter:blur(14px);
-  backdrop-filter:blur(14px);
+  background:rgba(225,229,227,.07);
+  box-shadow:inset 0 1px rgba(255,255,255,.08),0 0 9px rgba(225,229,227,.08);
+  -webkit-backdrop-filter:blur(4px);
+  backdrop-filter:blur(4px);
 }
-.task-navigation > .schedule-slot .approval-dock-compact .approval-dock-heading {
+.task-navigation > .schedule-slot-expanded::before {
+  content:"";
+  position:fixed;
+  inset:0;
+  z-index:138;
+  background:#05080d70;
+  -webkit-backdrop-filter:blur(4px);
+  backdrop-filter:blur(4px);
+  pointer-events:none;
+  animation:context-shade-in .2s ease-out both;
+}
+.task-navigation > .schedule-slot-expanded .approval-dock {
+  position:relative;
+  z-index:139;
+}
+.task-navigation > .schedule-slot .approval-dock .approval-dock-heading {
+  position:relative;
+  z-index:2;
+  height:44px;
   min-height:44px;
   padding:6px 10px;
   gap:7px;
   border-radius:12px;
 }
-.task-navigation > .schedule-slot .approval-dock-compact .approval-mascot {
+.task-navigation > .schedule-slot .approval-dock .approval-mascot {
   width:14px;
   height:14px;
 }
-.task-navigation > .schedule-slot .approval-dock-compact .approval-dock-label {
+.task-navigation > .schedule-slot .approval-dock .approval-dock-label {
+  flex:0 1 auto;
   flex-flow:row nowrap;
   align-items:center;
   gap:7px;
 }
-.task-navigation > .schedule-slot .approval-dock-compact .approval-dock-label strong,
-.task-navigation > .schedule-slot .approval-dock-compact .approval-dock-label > span {
+.task-navigation > .schedule-slot .approval-dock .approval-dock-label strong,
+.task-navigation > .schedule-slot .approval-dock .approval-dock-label > span {
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
 }
+.task-navigation > .schedule-slot .schedule-body {
+  position:absolute;
+  z-index:140;
+  left:0;
+  bottom:calc(100% + 8px);
+  width:calc(200% + 8px);
+  max-height:min(55dvh,420px);
+  padding:14px 15px;
+  border:1px solid #a9c5d78a;
+  border-radius:19px;
+  background:linear-gradient(155deg,#637f9480,#415a6b70 68%);
+  color:#edf5fa;
+  box-shadow:0 0 25px #9aafbf45,0 24px 80px #0009,inset 0 1px 0 #e6f4ff35;
+  -webkit-backdrop-filter:blur(18px) saturate(115%);
+  backdrop-filter:blur(18px) saturate(115%);
+  animation:schedule-panel-in 180ms cubic-bezier(.22,.8,.3,1) both;
+}
+.task-navigation > .schedule-slot .schedule-body-creating { max-height:none; overflow-y:visible; }
+.task-navigation > .schedule-slot .schedule-body-creating:focus-within {
+  max-height:calc(var(--app-height,100dvh) - 88px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+}
+.composer-dock:has(.schedule-body-creating:focus-within) > :not(.task-navigation) {
+  display:none !important;
+}
+.task-navigation:has(> .schedule-slot-expanded) > button { position:relative; z-index:139; }
+.task-navigation > .schedule-slot .schedule-body > p { transform:none; }
+@keyframes schedule-panel-in { from { opacity:0; transform:translateY(7px) scale(.99); } to { opacity:1; transform:translateY(0) scale(1); } }
+@media(prefers-reduced-motion:reduce) { .task-navigation > .schedule-slot .schedule-body,.task-navigation > .schedule-slot-expanded::before { animation:none; } }
 .task-manager-sheet { height:58dvh; max-height:100dvh; padding-top:env(safe-area-inset-top); transition:height .2s ease-out,border-radius .2s ease-out; }
 .task-manager-sheet[data-expanded="true"] { height:100dvh; border-radius:0; }
 .task-manager-sheet[data-dragging="true"] { transition:none; }
+/* Portaled task surfaces share the corrected standalone iPhone origin. */
+html[data-ios-status-offset="true"] .task-session-panel {
+  top:var(--app-top);
+  bottom:auto;
+  height:var(--app-height);
+  max-height:var(--app-height);
+}
+html[data-ios-status-offset="true"] .task-manager-sheet {
+  bottom:calc(0px - var(--app-top));
+  max-height:var(--app-height);
+}
 .task-manager-handle { display:flex; align-items:center; justify-content:center; align-self:stretch; flex-shrink:0; height:44px; touch-action:none; user-select:none; cursor:ns-resize; border-radius:inherit; }
 .task-manager-handle > span { width:36px; height:4px; border-radius:999px; background:#fff; }
 .task-manager-handle:focus-visible { outline:2px solid var(--color-accent); outline-offset:-5px; }
@@ -887,10 +979,20 @@ li:has(> .approval-dismissed) { display: none; }
 @keyframes task-sheet-exit { to { opacity:0; transform:translateY(40px); } }
 @media(prefers-reduced-motion:reduce) { .task-manager-sheet[data-state] { animation:none; transition:none; } }
 
-/* Slide only when the task panel mounts; the overlaid list retains this panel. */
-.task-session-panel[data-enter="true"][data-state="open"] { animation:task-session-enter 220ms cubic-bezier(.22,.8,.3,1) both; }
+/* Radix open state owns entry; an overlaid manager keeps this panel open. */
+.task-session-panel[data-state="open"][data-card-motion="preparing"] { opacity:.6; transform:translate3d(100%,0,0); }
+.task-session-panel[data-state="open"][data-card-motion="entering"] { animation:task-session-enter 280ms cubic-bezier(.22,.8,.3,1) both; }
 @keyframes task-session-enter { from { transform:translate3d(100%,0,0); opacity:.6; } to { transform:translate3d(0,0,0); opacity:1; } }
-@media(prefers-reduced-motion:reduce) { .task-session-panel[data-enter="true"][data-state="open"] { animation:none; } }
+@media(prefers-reduced-motion:reduce) { .task-session-panel[data-state="open"][data-card-motion] { animation:none; transform:none; opacity:1; } }
+
+@media(max-width:767px) {
+  .chat-view-card[data-card-motion="preparing"] { opacity:.6; transform:translate3d(100%,0,0); }
+  .chat-view-card[data-card-motion="entering"] { animation:chat-card-enter 280ms cubic-bezier(.22,.8,.3,1) both; }
+  .chat-view-card[data-card-motion="exiting"] { animation:chat-card-exit 280ms cubic-bezier(.22,.8,.3,1) both; pointer-events:none; }
+}
+@keyframes chat-card-enter { from { opacity:.6; transform:translate3d(100%,0,0); } to { opacity:1; transform:translate3d(0,0,0); } }
+@keyframes chat-card-exit { from { opacity:1; transform:translate3d(0,0,0); } to { opacity:0; transform:translate3d(100%,0,0); } }
+@media(prefers-reduced-motion:reduce) { .chat-view-card[data-card-motion] { animation:none; transform:none; opacity:1; } }
 
 .task-context-slot { display:flex; flex:1; min-width:0; justify-content:center; padding:4px 0; }
 .task-context-badge { display:inline-flex; align-items:center; justify-content:center; max-width:100%; padding:3px 10px; border:1px solid #9aafbf59; border-radius:999px; color:#b5c8d6; background:#637f9433; box-shadow:0 0 9px #9aafbf35; font-size:.6875rem; line-height:1.6; text-align:center; overflow-wrap:anywhere; }
@@ -916,8 +1018,8 @@ li:has(> .approval-dismissed) { display: none; }
 .chat-divider-bottom::after { bottom: -1px; }
 
 @keyframes task-session-exit { from { opacity:1; transform:translateX(0); } to { opacity:0; transform:translateX(100%); } }
-.task-session-panel[data-state="closed"] { animation:task-session-exit 200ms cubic-bezier(.4,0,.2,1) both; }
-@media(prefers-reduced-motion:reduce) { .task-session-panel[data-state="closed"] { animation:none; } }
+.task-session-panel[data-state="closed"],.task-session-panel[data-card-motion="exiting"] { animation:task-session-exit 280ms cubic-bezier(.22,.8,.3,1) both; }
+@media(prefers-reduced-motion:reduce) { .task-session-panel[data-state="closed"],.task-session-panel[data-card-motion="exiting"] { animation:none; } }
 
 /* Local wallpaper: shared image treatment for the app and Settings preview. */
 :root { --wallpaper-brightness: .34; --wallpaper-saturation: .72; --wallpaper-opacity: .20; }

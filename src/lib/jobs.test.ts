@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldRevealJob, freshTerminal, type ScheduleJob } from "./jobs.ts";
+import { shouldRevealJob, freshTerminal, jobsAvailabilityAfterProbe, type ScheduleJob } from "./jobs.ts";
 const now = Date.now();
 const job: ScheduleJob = {
   id: "j",
@@ -36,4 +36,10 @@ test("terminal visibility anchored to finished time, not polling", () => {
     ),
     false,
   );
+});
+
+test("a transient Jobs probe failure never removes an already available schedule entry", () => {
+  assert.equal(jobsAvailabilityAfterProbe("loading", false), "unavailable");
+  assert.equal(jobsAvailabilityAfterProbe("unavailable", true), "ready");
+  assert.equal(jobsAvailabilityAfterProbe("ready", false), "ready");
 });

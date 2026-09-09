@@ -103,7 +103,7 @@ export function restoreAfterProfiles(input: {
   if (wantedProfile && !names.has(wantedProfile)) {
     const intendedChat = Boolean(queryProfile) || stored?.view === "chat";
     return {
-      view: stored?.view === "settings" && !queryProfile ? "settings" : "roster",
+      view: "roster",
       profile: null,
       conversation: null,
       conversations,
@@ -113,13 +113,8 @@ export function restoreAfterProfiles(input: {
   }
 
   if (wantedProfile) {
-    const view: SessionView = queryProfile
-      ? "chat"
-      : stored?.view === "chat"
-        ? "chat"
-        : stored?.view === "settings"
-          ? "settings"
-          : "roster";
+    // A fresh app starts at contacts; only an explicit notification link opens chat.
+    const view: SessionView = queryProfile ? "chat" : "roster";
     return {
       view,
       profile: wantedProfile,
@@ -131,7 +126,7 @@ export function restoreAfterProfiles(input: {
   }
 
   return {
-    view: stored?.view === "settings" ? "settings" : "roster",
+    view: "roster",
     profile: null,
     conversation: null,
     conversations,

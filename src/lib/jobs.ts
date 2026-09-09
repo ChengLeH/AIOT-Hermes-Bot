@@ -14,6 +14,11 @@ export type ScheduleJob = {
   next_run_at: string | null;
   latest_execution: JobExecution | null;
 };
+export type JobsAvailability = "loading" | "ready" | "unavailable";
+export function jobsAvailabilityAfterProbe(previous: JobsAvailability, ok: boolean): JobsAvailability {
+  if (ok) return "ready";
+  return previous === "ready" ? "ready" : "unavailable";
+}
 export function executionKey(job: ScheduleJob) {
   return `${job.id}:${job.latest_execution?.id ?? ""}`;
 }

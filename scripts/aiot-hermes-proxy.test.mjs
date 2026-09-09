@@ -1,7 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { containMiddlewareFailure } from './aiot-hermes-proxy.mjs';
+import { containMiddlewareFailure, samePageOrigin, preventStaleAppShell } from './aiot-hermes-proxy.mjs';
+
+test('entry documents are never cached across hashed-asset deployments', () => {
+  for (const url of ['/', '/?profile=example', '/index.html']) {
+    const headers = {};
+    preventStaleAppShell({ method: 'GET', url }, { setHeader: (key, value) => { headers[key] = value; } });
+    assert.equal(headers['cache-control'], 'no-store');
+  }
+  preventStaleAppShell({ method: 'GET', url: '/assets/example.css' }, { setHeader: () => assert.fail('leave hashed asset policy unchanged') });
+});
+
+test('browser origin guard rejects cross-site requests even when Origin is omitted', () => {
+  const request = (headers = {}, remoteAddress = '100.64.0.10') => ({
+    method: 'POST',
+    headers: { host: 'machine.example.ts.net:10000', ...headers },
+    socket: { remoteAddress },
+  });
+  assert.equal(samePageOrigin(request({ origin: 'https://machine.example.ts.net:10000' })), true);
+  assert.equal(samePageOrigin(request({ origin: 'https://other.example.ts.net:10000' })), false);
+  assert.equal(samePageOrigin(request({ 'sec-fetch-site': 'same-origin' })), true);
+  assert.equal(samePageOrigin(request({ 'sec-fetch-site': 'cross-site' })), false);
+  assert.equal(samePageOrigin(request()), false);
+  assert.equal(samePageOrigin(request({}, '127.0.0.1')), true);
+});
 
 test('async native/session rejection becomes sanitized 503 and server keeps serving', async () => {
   const handler = containMiddlewareFailure(async (req, res) => {

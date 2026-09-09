@@ -1,9 +1,10 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Square } from "lucide-react";
 import { BotAvatar } from "./bot-avatar";
 import { ApprovalCardView } from "./approval-card";
-import type { ApprovalCard } from "@/lib/approvals";
+import { isVisibleActiveApproval, type ApprovalCard } from "@/lib/approvals";
 import { type Locale } from "@/lib/locale";
+import { overlayHistoryAction } from "@/lib/app-history";
 
 export type ApprovalDockHandle = { collapse: () => boolean };
 
@@ -18,51 +19,73 @@ export const ApprovalDock = forwardRef<ApprovalDockHandle, {
   const animation = useRef<Animation | null>(null);
   const ghost = useRef<HTMLElement | null>(null);
   const seenTriggers = useRef(new Set<string>());
+  const expandedRef = useRef(false);
   const en = locale === "en";
-  const pending = approvals.filter((card) => !card.hidden && ["pending", "submitting", "error"].includes(card.status));
+  const pending = approvals.filter(isVisibleActiveApproval);
   const pendingTrigger = pending.at(-1)?.requestId ?? "";
   const visible = pending.length > 0;
   const status = en ? "Waiting for approval" : "等待批准";
 
-  function open() {
-    if (expanded) return;
+  const open = useCallback(() => {
+    if (expandedRef.current) return;
+    expandedRef.current = true;
     window.history.pushState({ ...window.history.state, aiotView: "chat", aiotScheduleDock: undefined, aiotApprovalDock: profile }, "");
     setExpanded(true);
-  }
-  function collapse(fromHistory = false) {
-    if (!expanded) return false;
+  }, [profile]);
+  const collapse = useCallback((fromHistory = false) => {
+    if (!expandedRef.current) return false;
+    expandedRef.current = false;
     before.current = cardRef.current?.getBoundingClientRect() ?? null;
     ghost.current?.remove();
     ghost.current = cardRef.current?.cloneNode(true) as HTMLElement | null;
     setExpanded(false);
     if (!fromHistory && window.history.state?.aiotApprovalDock === profile) window.history.back();
     return true;
-  }
+  }, [profile]);
   useImperativeHandle(ref, () => ({ collapse: () => collapse() }));
 
   useEffect(() => {
     const trigger = pendingTrigger;
-    if (!trigger && expanded) {
+    if (!trigger && expandedRef.current) {
+      expandedRef.current = false;
       setExpanded(false);
       if (window.history.state?.aiotApprovalDock === profile) window.history.back();
       return;
     }
     if (trigger && !seenTriggers.current.has(trigger)) {
       seenTriggers.current.add(trigger);
-      if (!expanded) {
+      if (!expandedRef.current) {
+        expandedRef.current = true;
         window.history.pushState({ ...window.history.state, aiotView: "chat", aiotScheduleDock: undefined, aiotApprovalDock: profile }, "");
         setExpanded(true);
       }
     }
-  }, [pendingTrigger, profile, expanded]);
+  }, [pendingTrigger, profile]);
 
   useEffect(() => {
-    const pop = () => { if (window.history.state?.aiotApprovalDock !== profile) collapse(true); };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape" && expanded) { event.preventDefault(); collapse(); } };
+    const pop = () => {
+      const action = overlayHistoryAction(window.history.state, "aiotApprovalDock", profile, expandedRef.current);
+      if (action === "skip") {
+        queueMicrotask(() => {
+          if (window.history.state?.aiotApprovalDock === profile && !expandedRef.current) window.history.back();
+        });
+        return;
+      }
+      if (action === "close") collapse(true);
+    };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape" && expandedRef.current) { event.preventDefault(); collapse(); } };
     window.addEventListener("popstate", pop);
     window.addEventListener("keydown", key);
-    return () => { window.removeEventListener("popstate", pop); window.removeEventListener("keydown", key); };
-  });
+    return () => {
+      window.removeEventListener("popstate", pop);
+      window.removeEventListener("keydown", key);
+      if (window.history.state?.aiotApprovalDock === profile) {
+        const state = { ...window.history.state };
+        delete state.aiotApprovalDock;
+        window.history.replaceState(state, "");
+      }
+    };
+  }, [profile, collapse]);
 
   useLayoutEffect(() => {
     const el = cardRef.current;

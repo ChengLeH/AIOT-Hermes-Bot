@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyApprovalEvent,
+  isVisibleActiveApproval,
   approvalExpiresInMs,
   approvalBody,
   approvalDismissDelayMs,
@@ -176,4 +177,14 @@ test("dismissed unresolved approvals stay dismissed during replay", () => {
  const replay = mergeApproval(hidden, BASE);
  assert.equal(replay[0].hidden, true);
  assert.notEqual(replay[0].status, "approved");
+});
+
+test("hidden approvals never suppress the working ticker", () => {
+  for (const status of ["pending", "submitting", "error"] as const) {
+    assert.equal(isVisibleActiveApproval({ status, hidden: true }), false);
+    assert.equal(isVisibleActiveApproval({ status }), true);
+  }
+  for (const status of ["approved", "rejected", "expired"] as const) {
+    assert.equal(isVisibleActiveApproval({ status }), false);
+  }
 });

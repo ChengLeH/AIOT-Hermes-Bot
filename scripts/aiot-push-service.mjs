@@ -15,13 +15,14 @@ export function validPushSubscription(sub) {
 }
 
 /** Local AIOT service; stores credentials only in its private data directory. */
-export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.sendNotification.bind(webpush), pollMs = 3000, now = Date.now, nativeEvents, taskEvents, taskNotificationCurrent } = {}) {
+export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.sendNotification.bind(webpush), pollMs = 3000, eventTimeoutMs = 10_000, now = Date.now, nativeEvents, taskEvents, taskNotificationCurrent } = {}) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const stateCipher = createPrivateStateCipher({ dataDir });
   const state = stateCipher.read(() => ({ vapid: webpush.generateVAPIDKeys(), sources: {} }));
   const save = () => stateCipher.write(state);
   save();
   const presence = new Map(); // Ephemeral device/tab leases; never persist across restarts.
+  const sourceLoads = new WeakMap(); // Source-object keyed only; never retain untrusted identifiers.
   let queue = Promise.resolve();
   const serial = (fn) => { const result = queue.then(fn); queue = result.catch(() => {}); return result; };
   const json = (res, code, value) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -31,18 +32,37 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
     return response.json();
   };
   const presenceKey = (source, endpoint) => createHash('sha256').update(source.target + '\n' + source.authorization + '\n' + endpoint).digest('hex');
+  const taskMode = event => ['independent', 'fork'].includes(event.taskMode) ? event.taskMode : ['independent', 'fork'].includes(event.payload?.mode) ? event.payload.mode : '';
+  function preview(value) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '').replace(/^\s*(?:tool|function|@(?:file|image):).*$/gim, ' ').replace(/[\r\n]+/g, ' ')
+      .replace(/(?:file:\/\/|https?:\/\/|~\/|\.{1,2}\/|\/|[A-Za-z]:[\\/])[^\s<>(){}[\]]+/gi, '')
+      .replace(/\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|bearer|secret|password|passwd|authorization)\b(?:\s*[:=]\s*|\s+)\S+/gi, '')
+      .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, '')
+      .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '')
+      .replace(/\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|bearer|secret|password|passwd|authorization)\b/gi, '')
+      .replace(/\s+/g, ' ').trim().slice(0, 120);
+  }
+  function localizedBody(payload, locale) {
+    const zh = locale === 'zh-Hant'; const mode = payload.taskMode;
+    const base = payload.kind === 'approval_request'
+      ? mode === 'fork' ? (zh ? '分支任務需要你批准' : 'Forked task needs approval') : mode === 'independent' ? (zh ? '獨立任務需要你批准' : 'Independent task needs approval') : (zh ? '需要你批准' : 'Approval requested')
+      : mode === 'fork' ? (zh ? '分支任務已完成' : 'Forked task complete') : payload.taskId ? (zh ? '獨立任務已完成' : 'Independent task complete') : (zh ? '有新的回覆' : 'New reply');
+    return payload.preview ? `${base}：${payload.preview}` : base;
+  }
   function removeSubscription(source, id) {
     const sub = source.subscriptions[id];
     if (sub) presence.delete(presenceKey(source, sub.endpoint));
     delete source.subscriptions[id];
     if (source.localeBySubscription) delete source.localeBySubscription[id];
     for (const item of source.pending || []) item.ids = item.ids.filter(value => value !== id);
+    if (!Object.keys(source.subscriptions).length) sourceLoads.delete(source);
   }
-  async function deliver(source, id, payload) {
+  async function deliver(source, id, payload, { ignorePresence = false } = {}) {
     const sub = source.subscriptions[id];
     if (!sub || !validPushSubscription(sub)) return false;
     const leases = presence.get(presenceKey(source, sub.endpoint));
-    if (leases) {
+    if (leases && !ignorePresence) {
       for (const [client, expires] of leases) if (expires <= now()) leases.delete(client);
       if (leases.size) return true; // Consumed by the foreground event stream, not deferred.
       presence.delete(presenceKey(source, sub.endpoint));
@@ -50,8 +70,7 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
     try {
       const locale = source.localeBySubscription?.[id] === 'zh-Hant' ? 'zh-Hant' : 'en';
       const localized = { ...payload, locale };
-      if (payload.kind === 'approval_request') localized.body = locale === 'zh-Hant' ? '需要你批准' : 'Approval requested';
-      if (payload.kind === 'complete') localized.body = locale === 'zh-Hant' ? '有新的回覆' : 'New reply';
+      if (payload.kind === 'approval_request' || payload.kind === 'complete') localized.body = localizedBody(payload, locale);
       await send(sub, JSON.stringify(localized), { TTL: 300, timeout: 10000, vapidDetails: { subject: 'https://github.com/ChengLeH/AIOT-Hermes-Bot', ...state.vapid } });
       return true;
     } catch (error) {
@@ -85,15 +104,28 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
       const kind = event.kind === 'approval_request' ? 'approval_request' : 'complete';
       const payload = { title: 'aiot', body: kind === 'approval_request' ? 'Approval requested' : 'New reply', kind, profile: event.profile, sessionId: event.conversation, tag: `aiot:${kind}:${event.profile}:${event.conversation}:${event.event_id || event.seq}` };
       if (typeof event.taskId === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(event.taskId)) payload.taskId = event.taskId;
+      const mode = taskMode(event); if (mode) payload.taskMode = mode;
+      const text = preview(event.payload?.text || event.payload?.output || event.payload?.summary); if (text) payload.preview = text;
       if (kind === 'approval_request' && typeof requestId === 'string') payload.requestId = requestId;
       source.pending.push({ payload, ids: Object.keys(source.subscriptions) });
     }
   }
-  async function eventPage(load) {
+  async function eventPage(source, channel, load) {
+    let loads = sourceLoads.get(source);
+    if (!loads) { loads = new Map(); sourceLoads.set(source, loads); }
+    let pending = loads.get(channel);
+    if (!pending) {
+      pending = Promise.resolve().then(load);
+      loads.set(channel, pending);
+      void pending.finally(() => {
+        if (loads.get(channel) !== pending) return;
+        loads.delete(channel); if (!loads.size) sourceLoads.delete(source);
+      }).catch(() => {});
+    }
     let timeout;
     try {
-      return await Promise.race([Promise.resolve().then(load), new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('Notification source timed out')), 10000);
+      return await Promise.race([pending, new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Notification source timed out')), eventTimeoutMs);
       })]);
     } finally { clearTimeout(timeout); }
   }
@@ -101,7 +133,7 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
     for (let page = 0; page < 1000; page++) {
       let data;
       try {
-        data = await eventPage(() => path === 'task/events' && taskEvents ? taskEvents(source[cursorKey] || 0, source.target, source.authorization) : path === 'native/events' && nativeEvents
+        data = await eventPage(source, cursorKey, () => path === 'task/events' && taskEvents ? taskEvents(source[cursorKey] || 0, source.target, source.authorization) : path === 'native/events' && nativeEvents
           ? nativeEvents(source[cursorKey] || 0)
           : request(source, `${path}?after=${source[cursorKey] || 0}`));
       }
@@ -126,7 +158,10 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
       ...(taskEvents ? [drainChannel(source, notify, 'task/events', 'taskCursor', true)] : []),
     ];
     const results = await Promise.allSettled(channels);
-    source.sourceReady = results.every(result => result.status === 'fulfilled');
+    // The Bot event feed is the required notification source. Official Runs and
+    // Session task feeds add richer events, but older Hermes installs may not
+    // expose them and must not prevent a browser from enrolling.
+    source.sourceReady = results[0]?.status === 'fulfilled';
     if (!source.sourceReady && !notify) throw new Error('Notification history unavailable');
   }
   async function flush(source, approvals = true) {
@@ -134,7 +169,7 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
       if (item.payload.kind === 'approval_request' && (!approvals || (!item.payload.taskId && !source.sourceReady))) continue;
       if (item.payload.taskId && taskNotificationCurrent) {
         let current;
-        try { current = await eventPage(() => taskNotificationCurrent(item.payload, source.target, source.authorization)); }
+        try { current = await eventPage(source, `current:${item.payload.taskId}`, () => taskNotificationCurrent(item.payload, source.target, source.authorization)); }
         catch { continue; } // Unknown state retains the durable obligation for retry.
         if (current === false) { item.ids = []; save(); continue; }
         if (current !== true) continue;
@@ -212,7 +247,7 @@ export function createPushService({ dataDir, fetchImpl = fetch, send = webpush.s
         return json(res, 200, { ok: true });
       }
       if (action === 'unsubscribe') { removeSubscription(source, body.id); save(); return json(res, 200, { ok: true }); }
-      const ok = await deliver(source, body.id, { title: 'aiot', body: 'Notifications are enabled', tag: 'aiot:test' }); save();
+      const ok = await deliver(source, body.id, { title: 'aiot', body: 'Notifications are enabled', tag: 'aiot:test' }, { ignorePresence: true }); save();
       return json(res, ok ? 200 : 502, { ok, ...(!ok ? { error: 'Browser push service could not accept the notification' } : {}) });
     } catch (error) { return json(res, [401, 403].includes(error.status) ? error.status : 503, { error: 'Unable to connect to Hermes notification events' }); }
   }

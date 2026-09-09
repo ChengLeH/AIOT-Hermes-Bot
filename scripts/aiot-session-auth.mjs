@@ -65,51 +65,67 @@ export function createSessionAuth({ read, write, fetchImpl = globalThis.fetch, n
     locks.set(owner, next);
     try { return await next; } finally { if (locks.get(owner) === next) locks.delete(owner); }
   }
-  async function load(owner) {
+  async function load(owner, signal) {
+    if (signal?.aborted) throw signal.reason;
     const record = await read(owner);
+    if (signal?.aborted) throw signal.reason;
     if (!record) return null;
     if (record.owner !== owner) throw fail();
     return { owner, dashboardOrigin: origin(record.dashboardOrigin), ...tokens(record) };
   }
-  async function post(dashboardOrigin, path, body, bearer) {
+  async function post(dashboardOrigin, path, body, bearer, signal) {
     const response = await fetchImpl(`${dashboardOrigin}${path}`, {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+      method: "POST", redirect: "error", signal: requestSignal(10_000, signal),
       headers: { "Content-Type": "application/json", ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
       body: JSON.stringify(body),
     });
     if (!response.ok) return { status: response.status, data: null };
-    return { status: response.status, data: await response.json() };
+    return { status: response.status, data: signal ? JSON.parse(await boundedText(response, signal)) : await response.json() };
   }
-  async function boundedText(response) {
+  async function readChunk(reader, signal) {
+    if (!signal) return reader.read();
+    if (signal.aborted) throw signal.reason;
+    let onAbort;
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try { return await Promise.race([reader.read(), aborted]); }
+    finally { signal.removeEventListener("abort", onAbort); }
+  }
+  async function boundedText(response, signal) {
     const declaredLength = Number(response.headers.get("content-length") || 0);
     if (declaredLength > MAX_BOOTSTRAP_BYTES || !response.body || typeof response.body.getReader !== "function") throw fail();
     const reader = response.body.getReader();
     const chunks = []; let size = 0;
     try {
       while (true) {
-        const { value, done } = await reader.read();
+        const { value, done } = await readChunk(reader, signal);
         if (done) break;
         size += value.byteLength;
         if (size > MAX_BOOTSTRAP_BYTES) throw fail();
         chunks.push(Buffer.from(value));
       }
-    } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+    } catch (error) { void reader.cancel().catch(() => {}); throw error; }
     finally { reader.releaseLock(); }
     return Buffer.concat(chunks).toString("utf8");
   }
-  async function bootstrapGet(dashboardOrigin, path, expectedType) {
+  function requestSignal(timeoutMs, signal) {
+    return signal || AbortSignal.timeout(timeoutMs);
+  }
+  async function bootstrapGet(dashboardOrigin, path, expectedType, signal) {
     const endpoint = `${dashboardOrigin}${path}`;
     const response = await fetchImpl(endpoint, { method: "GET", redirect: "error",
-      signal: AbortSignal.timeout(10_000), headers: { Accept: expectedType }, cache: "no-store" });
+      signal: requestSignal(10_000, signal), headers: { Accept: expectedType }, cache: "no-store" });
     // Fetch redirect:error is authoritative; also reject transformed/custom fetch responses.
     if (!response.ok || response.redirected || (response.url && response.url !== endpoint) ||
         !response.headers?.get("content-type")?.toLowerCase().includes(expectedType)) throw fail();
-    return boundedText(response);
+    return boundedText(response, signal);
   }
-  async function refresh(owner, record) {
+  async function refresh(owner, record, signal) {
     const result = await post(record.dashboardOrigin, "/auth/native/refresh", {
       refresh_token: record.refresh_token, provider: record.provider,
-    });
+    }, undefined, signal);
     if (!result.data) {
       if (result.status === 401) await write(owner, null);
       throw fail();
@@ -126,26 +142,26 @@ export function createSessionAuth({ read, write, fetchImpl = globalThis.fetch, n
     if (!response.headers?.get("content-type")?.toLowerCase().includes("application/json")) throw fail();
     return { status: response.status, data: JSON.parse(await boundedText(response)) };
   }
-  async function authenticatedGet(owner, path, accept = "application/json") {
+  async function authenticatedGet(owner, path, accept = "application/json", signal) {
     if (typeof path !== "string" || !path.startsWith("/api/") || path.startsWith("//") || hasControlCharacter(path) ||
         typeof accept !== "string" || !accept || accept.length > 200 || hasControlCharacter(accept)) throw fail();
-    let record = await load(owner);
+    let record = await load(owner, signal);
     if (!record) throw fail();
-    const status = JSON.parse(await bootstrapGet(record.dashboardOrigin, "/api/status", "application/json"));
+    const status = JSON.parse(await bootstrapGet(record.dashboardOrigin, "/api/status", "application/json", signal));
     let headers;
     if (status.auth_required === false) {
-      const html = await bootstrapGet(record.dashboardOrigin, "/", "text/html");
+      const html = await bootstrapGet(record.dashboardOrigin, "/", "text/html", signal);
       headers = { Accept: accept, "X-Hermes-Session-Token": legacyBootstrap(html) };
     } else if (status.auth_required === true) {
-      if (record.expires_at * 1000 <= now() + 30_000) record = await refresh(owner, record);
+      if (record.expires_at * 1000 <= now() + 30_000) record = await refresh(owner, record, signal);
       headers = { Accept: accept, Authorization: `Bearer ${record.access_token}` };
     } else throw fail();
     const endpoint = `${record.dashboardOrigin}${path}`;
-    let response = await fetchImpl(endpoint, { method: "GET", redirect: "error", signal: AbortSignal.timeout(20_000), headers, cache: "no-store" });
+    let response = await fetchImpl(endpoint, { method: "GET", redirect: "error", signal: requestSignal(20_000, signal), headers, cache: "no-store" });
     if (response.status === 401 && headers.Authorization) {
-      record = await refresh(owner, record);
+      record = await refresh(owner, record, signal);
       headers = { Accept: accept, Authorization: `Bearer ${record.access_token}` };
-      response = await fetchImpl(endpoint, { method: "GET", redirect: "error", signal: AbortSignal.timeout(20_000), headers, cache: "no-store" });
+      response = await fetchImpl(endpoint, { method: "GET", redirect: "error", signal: requestSignal(20_000, signal), headers, cache: "no-store" });
     }
     if (response.redirected || (response.url && response.url !== endpoint)) throw fail();
     return response;
@@ -243,8 +259,8 @@ export function createSessionAuth({ read, write, fetchImpl = globalThis.fetch, n
         return value;
       }));
     },
-    get(owner, path, accept) {
-      return safely(() => locked(owner, () => authenticatedGet(owner, path, accept)));
+    get(owner, path, accept, { signal } = {}) {
+      return safely(() => locked(owner, () => authenticatedGet(owner, path, accept, signal)));
     },
     clear(owner) {
       return safely(() => locked(owner, async () => {

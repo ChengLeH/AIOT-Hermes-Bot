@@ -34,7 +34,8 @@ let replayProgress = false;
 let replayBaseline: Map<string, string> | null = null;
 let generation = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
-let looping = false;
+let lifecycle = 0;
+let profileRefresh: { generation: number; lifecycle: number; origin: string; apiKey: string } | null = null;
 let polling = false;
 const seen = new Set<string>();
 const turns: TurnMap = {};
@@ -56,6 +57,7 @@ export function startHermesRuntime(): () => void {
   users += 1;
   if (!started) {
     started = true;
+    lifecycle += 1;
     markRestorePending();
     void refreshProfiles();
     timer = setInterval(() => void refreshProfiles(), PROFILE_REFRESH_SECONDS * 1000);
@@ -68,13 +70,16 @@ export function startHermesRuntime(): () => void {
     window.addEventListener("focus", onVisible);
     window.addEventListener("online", onVisible);
     window.addEventListener("offline", onOffline);
-    void eventLoop();
+    void eventLoop(lifecycle);
   }
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     users = Math.max(0, users - 1);
     if (users > 0) return;
     started = false;
-    looping = false;
+    lifecycle += 1;
     if (timer) clearInterval(timer);
     timer = null;
     if (onVisible) {
@@ -96,6 +101,12 @@ function markUnreachable(error: string): void {
   useDesk.getState().setProbe(failedProbe(current.lastProbe, error));
 }
 
+function requestIsCurrent(identity: { generation: number; lifecycle: number; origin: string; apiKey: string }): boolean {
+  const current = useDesk.getState().connection;
+  return started && identity.generation === generation && identity.lifecycle === lifecycle
+    && identity.origin === current.origin && identity.apiKey === current.apiKey;
+}
+
 async function refreshProfiles(): Promise<void> {
   const { connection } = useDesk.getState();
   const origin = connection.origin;
@@ -109,9 +120,15 @@ async function refreshProfiles(): Promise<void> {
     markUnreachable("offline");
     return;
   }
+  if (!started) return;
+  if (profileRefresh && requestIsCurrent(profileRefresh)) return;
+  const identity = { generation, lifecycle, origin, apiKey };
+  profileRefresh = identity;
   try {
     const catalog = await getBotProfiles(origin, apiKey);
+    if (!requestIsCurrent(identity)) return;
     const stored = await readBrowserDeskSession(origin);
+    if (!requestIsCurrent(identity)) return;
     useDesk.getState().syncHermesProfiles(catalog.profiles, catalog.capabilities);
     useDesk.getState().setProbe({
       ok: true,
@@ -150,22 +167,23 @@ async function refreshProfiles(): Promise<void> {
       }
     }
   } catch (err) {
+    if (!requestIsCurrent(identity)) return;
     if (isUnauthorizedError(err)) {
       useDesk.getState().markDisconnected();
       return;
     }
     markUnreachable(isAbortError(err) ? "timeout" : err instanceof Error ? err.message : "profiles 失敗");
+  } finally {
+    if (profileRefresh === identity) profileRefresh = null;
   }
 }
 
-async function eventLoop(): Promise<void> {
-  if (looping) return;
-  looping = true;
-  while (started) {
+async function eventLoop(epoch: number): Promise<void> {
+  while (started && epoch === lifecycle) {
     await pollOnce();
+    if (!started || epoch !== lifecycle) return;
     await new Promise((r) => setTimeout(r, replaying && replayProgress ? 0 : 800));
   }
-  looping = false;
 }
 
 function sink(): EventSink {
@@ -207,12 +225,13 @@ async function pollOnce(): Promise<void> {
   }
   polling = true;
   const gen = generation;
+  const identity = { generation: gen, lifecycle, origin, apiKey };
   try {
     const [page, nativePage] = await Promise.all([
       getBotEvents(origin, apiKey, after),
       getNativeRunEvents(origin, apiKey, nativeAfter),
     ]);
-    if (gen !== generation) return;
+    if (!requestIsCurrent(identity)) return;
     if (isUnauthorizedStatus(page.status)) {
       useDesk.getState().markDisconnected();
       return;
@@ -252,30 +271,31 @@ async function pollOnce(): Promise<void> {
     }
     // Session reads repair missed/expired event history after reconnect and
     // across devices. Keep historical reads out of unread/working indicators.
-    if (!replaying && historySyncGeneration !== gen && Date.now() - lastHistorySync > 10_000) {
+    if (!replaying && historySyncGeneration !== gen && Date.now() - lastHistorySync > 15_000) {
       lastHistorySync = Date.now();
       historySyncGeneration = gen;
       // Supplementary history never blocks the 800ms live event loop.
-      void Promise.all(useDesk.getState().bots.filter((bot) => bot.available && bot.nativeCapabilities?.available && !useDesk.getState().sending[bot.id] && useDesk.getState().botState[bot.id] !== "working").map(async (bot) => {
-        const identity = { generation: gen, origin, apiKey, profile: bot.profile, conversation: bot.conversation };
+      void (async () => { for (const bot of useDesk.getState().bots.filter((bot) => bot.available && bot.nativeCapabilities?.available && !useDesk.getState().sending[bot.id] && useDesk.getState().botState[bot.id] !== "working")) {
+        if (!requestIsCurrent(identity)) return;
+        const historyIdentity = { generation: gen, origin, apiKey, profile: bot.profile, conversation: bot.conversation };
         try {
           const rows = await getSessionHistory(origin, apiKey, bot.profile, bot.conversation);
           const current = useDesk.getState();
           const currentBot = current.bots.find((item) => item.id === bot.id);
-          if (!currentBot || !canApplySessionHistory(identity, {
+          if (!requestIsCurrent(identity)) return;
+          if (!currentBot || !canApplySessionHistory(historyIdentity, {
             generation, origin: current.connection.origin, apiKey: current.connection.apiKey,
             profile: currentBot.profile, conversation: currentBot.conversation, started,
             working: current.botState[bot.id] === "working", sending: Boolean(current.sending[bot.id]),
-          })) return;
-          for (const row of missingSessionMessages(current.messages.filter((m) => m.botId === bot.id), rows)) {
-            current.upsertEventMessage({ profile: bot.profile, conversation: bot.conversation, ...row });
-          }
+          })) continue;
+          current.upsertSessionHistoryMessages(bot.profile, bot.conversation, missingSessionMessages(current.messages.filter((m) => m.botId === bot.id), rows).map((row) => ({ profile: bot.profile, conversation: bot.conversation, ...row })));
         } catch { /* Session API is supplementary; preserve Bot event history. */ }
-      })).finally(() => { if (historySyncGeneration === gen) historySyncGeneration = null; });
+      }} )().finally(() => { if (historySyncGeneration === gen) historySyncGeneration = null; });
     }
     after = state.cursor;
     nativeAfter = nativeState.cursor;
   } catch (err) {
+    if (!requestIsCurrent(identity)) return;
     if (isUnauthorizedError(err)) {
       useDesk.getState().markDisconnected();
       return;

@@ -10,7 +10,7 @@ import { createPrivateStateCipher } from './aiot-private-state.mjs';
 
 const target = 'https://bot.example/api/bot';
 const ownerOf = (key, base = target) => createHash('sha256').update(`${base}\nBearer ${key}`).digest('hex');
-function fixture(t, seed = {}, rpcRequest, extraFetch) {
+function fixture(t, seed = {}, rpcRequest, extraFetch, serviceOptions = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiot-session-service-'));
   const cipher = createPrivateStateCipher({ dataDir, fileName: 'task-sessions.json' });
   cipher.write({ tasks: [], auth: {}, ...seed });
@@ -28,7 +28,7 @@ function fixture(t, seed = {}, rpcRequest, extraFetch) {
     if (extraFetch) return extraFetch(url, init);
     throw new Error('Unexpected request');
   };
-  const service = createSessionService({ dataDir, fetchImpl, rpcClientFactory: () => ({ closed: false, connect: async () => {}, close() {}, request: async (method, params) => rpcRequest ? rpcRequest(method,params) : method === 'session.close' ? { closed: true } : method === 'session.delete' ? { deleted: params.session_id } : {} }) });
+  const service = createSessionService({ dataDir, fetchImpl, rpcClientFactory: () => ({ closed: false, connect: async () => {}, close() {}, request: async (method, params) => rpcRequest ? rpcRequest(method,params) : method === 'session.close' ? { closed: true } : method === 'session.delete' ? { deleted: params.session_id } : {} }), ...serviceOptions });
   t.after(() => { service.close(); rmSync(dataDir, { recursive: true, force: true }); });
   async function request(path, { key = 'a', method = 'GET', body, host = '127.0.0.1:18080', peer = '127.0.0.1', base = target } = {}) {
     const req = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []);
@@ -252,4 +252,30 @@ test('artifact download uses only an owner-scoped opaque id and the stored offic
   assert.equal(fetched.at(-1).init.headers.Authorization,'Bearer secret');
   assert.equal((await request('/api/bot/sessions/artifact?botId=other&profile=alpha&id=task&artifactId=opaque-artifact')).status,404);
   assert.equal((await request('/api/bot/sessions/artifact?botId=bot&profile=alpha&id=task&artifactId=missing')).status,404);
+});
+
+test('artifact scan deadline also bounds token refresh and never blocks completed task detail or queue recovery', async t => {
+  const mine = ownerOf('a');
+  const task = { id: 'completed-task', owner: mine, botId: 'bot', profile: 'alpha', status: 'completed', turn: 1, completedTurn: 1, sessionId: 'runtime', storedSessionId: 'stored', messages: [] };
+  let refreshRequests = 0; let messageRequests = 0;
+  const { request, cipher } = fixture(t, { tasks: [task], auth: { [mine]: { owner: mine, dashboardOrigin: 'https://dashboard.example', token_type: 'Bearer', access_token: 'secret', refresh_token: 'secret-rt', provider: 'p', expires_at: 1 } } },
+    async method => method === 'session.resume' ? { session_id: 'runtime', session_key: 'stored', running: false } : {},
+    async (url, init) => {
+      if (url.endsWith('/api/status')) return Response.json({ auth_required: true });
+      if (url.endsWith('/auth/native/refresh')) {
+        refreshRequests += 1;
+        return new Response(new ReadableStream({ start(controller) { init.signal.addEventListener('abort', () => controller.error(new DOMException('timed out', 'TimeoutError')), { once: true }); } }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/api/sessions/stored/messages?')) { messageRequests += 1; return Response.json({}); }
+      throw new Error('unexpected');
+    },
+    { artifactScanTimeoutMs: 10 });
+  const started = Date.now();
+  const result = await request('/api/bot/sessions/detail?id=completed-task&botId=bot&profile=alpha');
+  assert.ok(Date.now() - started < 500, 'the whole supplementary scan uses one short deadline');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.task.status, 'completed');
+  assert.equal(refreshRequests, 1);
+  assert.equal(messageRequests, 0, 'the expired credential prevented the artifact request');
+  assert.equal(cipher.read().tasks[0].artifactScanTurn, undefined, 'a timed-out scan remains eligible for a later retry');
 });

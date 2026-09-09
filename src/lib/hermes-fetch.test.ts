@@ -50,3 +50,50 @@ test("abort errors are detected without treating them as missing keys", () => {
   assert.equal(isAbortError(err), true);
   assert.equal(isAbortError(new Error("profiles 401")), false);
 });
+
+test("completed or failed timed fetch removes the caller's abort listener", async () => {
+  const real = globalThis.fetch;
+  try {
+    for (const failure of [false, true]) {
+      const caller = new AbortController();
+      let added: EventListenerOrEventListenerObject | null = null;
+      let removed: EventListenerOrEventListenerObject | null = null;
+      const add = caller.signal.addEventListener.bind(caller.signal);
+      const remove = caller.signal.removeEventListener.bind(caller.signal);
+      caller.signal.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+        if (type === "abort") added = listener;
+        add(type, listener, options);
+      }) as typeof caller.signal.addEventListener;
+      caller.signal.removeEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => {
+        if (type === "abort") removed = listener;
+        remove(type, listener, options);
+      }) as typeof caller.signal.removeEventListener;
+      globalThis.fetch = async () => {
+        if (failure) throw new Error("network failed");
+        return new Response("ok");
+      };
+      const request = hermesFetch("https://example.test/profiles", { signal: caller.signal, timeoutMs: 1000 });
+      if (failure) await assert.rejects(request, /network failed/);
+      else await request;
+      assert.ok(added);
+      assert.equal(removed, added, "remove the same abort callback on every settlement path");
+    }
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("external cancellation still reaches a timed fetch", async () => {
+  const real = globalThis.fetch;
+  try {
+    globalThis.fetch = async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")));
+    });
+    const caller = new AbortController();
+    const request = hermesFetch("https://example.test/profiles", { signal: caller.signal, timeoutMs: 1000 });
+    caller.abort();
+    await assert.rejects(request, { name: "AbortError" });
+  } finally {
+    globalThis.fetch = real;
+  }
+});

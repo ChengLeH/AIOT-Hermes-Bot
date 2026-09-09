@@ -32,7 +32,7 @@ export function hermesRequestUrl(value: string): string {
   return `/__aiot/hermes?origin=${encodeURIComponent(target.origin)}&path=${encodeURIComponent(`${target.pathname}${target.search}`)}`;
 }
 
-export function hermesFetch(url: string, init: HermesFetchInit = {}): Promise<Response> {
+export async function hermesFetch(url: string, init: HermesFetchInit = {}): Promise<Response> {
   const { apiKey = "", headers: extra, timeoutMs, signal, ...rest } = init;
   const headers = withBearer(apiKey, extra);
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
@@ -41,27 +41,34 @@ export function hermesFetch(url: string, init: HermesFetchInit = {}): Promise<Re
   let controller: AbortController | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let usedSignal = signal;
+  let onAbort: (() => void) | undefined;
   if (typeof timeoutMs === "number" && timeoutMs > 0) {
     controller = new AbortController();
     timer = setTimeout(() => controller!.abort(), timeoutMs);
     if (signal) {
       if (signal.aborted) controller.abort();
-      else signal.addEventListener("abort", () => controller!.abort(), { once: true });
+      else {
+        onAbort = () => controller!.abort();
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
     }
     usedSignal = controller.signal;
   }
 
-  return fetch(hermesRequestUrl(url), {
-    ...rest,
-    signal: usedSignal,
-    headers,
-    credentials: "omit",
-    mode: "cors",
-    redirect: "error",
-    cache: "no-store",
-  }).finally(() => {
+  try {
+    return await fetch(hermesRequestUrl(url), {
+      ...rest,
+      signal: usedSignal,
+      headers,
+      credentials: "omit",
+      mode: "cors",
+      redirect: "error",
+      cache: "no-store",
+    });
+  } finally {
     if (timer) clearTimeout(timer);
-  });
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 
 export function bearerFromRequest(request: Request): string {

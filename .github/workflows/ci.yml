@@ -44,3 +44,9 @@ jobs:
       - run: npm run build
         env:
           VITE_AUTH_ENABLED: 'false'
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run browser UI regression
+        run: npm run test:ui
+        env:
+          AIOT_UI_BROWSER_CHANNEL: chromium

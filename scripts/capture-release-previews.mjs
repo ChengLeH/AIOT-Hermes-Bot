@@ -27,8 +27,8 @@ const details={
     {id:"a0",role:"assistant",content:"The export is ready to run after your approval."},
   ],pendingApproval:{kind:"approval",description:"Allow this task to create the release export file.",command:"node scripts/export-release.mjs --format json",receivedAt:new Date(now-2_000).toISOString(),timeoutSeconds:600,expiresAt:new Date(now+598_000).toISOString(),choices:["once","deny"]}},
   "task-review":{...tasks[1],queuedTurns:[{id:"queue-1",text:"After that, list the two most important deployment checks.",createdAt:new Date(now-8_000).toISOString()}],messages:[
-    {id:"u1",role:"user",content:"Review the v0.2.1 release notes using the recent Bot context."},
-    {id:"a1",role:"assistant",content:"I am checking the installation steps and security notes now.\n\n```ts\nconst release = \"v0.2.1\";\nconst checks = [\"npm test\", \"npm run build\"];\n```"},
+    {id:"u1",role:"user",content:"Review the v0.2.2 release notes using the recent Bot context."},
+    {id:"a1",role:"assistant",content:"I am checking the installation steps and security notes now.\n\n```ts\nconst release = \"v0.2.2\";\nconst checks = [\"npm test\", \"npm run build\"];\n```"},
   ]},
   "task-index":{...tasks[2],messages:[
     {id:"u2",role:"user",content:"Create a small index from the attached release notes."},
@@ -36,7 +36,7 @@ const details={
   ]},
 };
 const events=[
-  {seq:1,profile:"orion",conversation:"demo-orion",kind:"user_message",payload:{message_id:"m1",text:"Prepare the v0.2.1 release."}},
+  {seq:1,profile:"orion",conversation:"demo-orion",kind:"user_message",payload:{message_id:"m1",text:"Prepare the v0.2.2 release."}},
   {seq:2,profile:"orion",conversation:"demo-orion",kind:"message",payload:{message_id:"m2",text:"I will verify the current build, tests, and deployment notes."}},
 ];
 
@@ -54,8 +54,8 @@ async function createPage(browser,locale){
       {id:"a0",role:"assistant",content:locale==="en"?"The export is ready to run after your approval.":"匯出流程已準備好，等你批准後執行。"},
     ],pendingApproval:{...details["task-approval"].pendingApproval,description:locale==="en"?"Allow this task to create the release export file.":"允許這個任務建立版本匯出檔。"}},
     "task-review":{...details["task-review"],title:pageTasks[1].title,messages:[
-      {id:"u1",role:"user",content:locale==="en"?"Review the v0.2.1 release notes using the recent Bot context.":"使用最近的 Bot 脈絡檢查 v0.2.1 版本說明。"},
-      {id:"a1",role:"assistant",content:locale==="en"?details["task-review"].messages[1].content:"我正在檢查安裝步驟與安全性說明。\n\n```ts\nconst release = \"v0.2.1\";\nconst checks = [\"npm test\", \"npm run build\"];\n```"},
+      {id:"u1",role:"user",content:locale==="en"?"Review the v0.2.2 release notes using the recent Bot context.":"使用最近的 Bot 脈絡檢查 v0.2.2 版本說明。"},
+      {id:"a1",role:"assistant",content:locale==="en"?details["task-review"].messages[1].content:"我正在檢查安裝步驟與安全性說明。\n\n```ts\nconst release = \"v0.2.2\";\nconst checks = [\"npm test\", \"npm run build\"];\n```"},
     ],queuedTurns:[{id:"queue-1",text:locale==="en"?"After that, list the two most important deployment checks.":"完成後，列出兩項最重要的部署檢查。",createdAt:new Date(now-8_000).toISOString()}]},
     "task-index":{...details["task-index"],title:pageTasks[2].title,messages:[
       {id:"u2",role:"user",content:locale==="en"?"Create a small index from the attached release notes.":"從附加的版本說明建立一份精簡索引。"},
@@ -72,7 +72,7 @@ async function createPage(browser,locale){
     if(url.pathname==="/api/bot/sessions/status")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({authenticated:true,dashboardOrigin:"https://dashboard.preview.invalid"})});
     if(url.pathname==="/api/bot/sessions/list")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({tasks:pageTasks})});
     if(url.pathname==="/api/bot/sessions/detail")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({task:pageDetails[url.searchParams.get("id")]||pageDetails["task-review"]})});
-    if(url.pathname==="/api/bot/sessions/artifact")return route.fulfill({status:200,contentType:"text/plain",headers:{"content-disposition":"attachment; filename=release-index.txt"},body:"AIOT v0.2.1 release index\n"});
+    if(url.pathname==="/api/bot/sessions/artifact")return route.fulfill({status:200,contentType:"text/plain",headers:{"content-disposition":"attachment; filename=release-index.txt"},body:"AIOT v0.2.2 release index\n"});
     if(url.pathname==="/__aiot/hermes"){
       const path=url.searchParams.get("path")||"";
       if(path.startsWith("/api/bot/profiles"))return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog)});
@@ -90,12 +90,12 @@ async function createPage(browser,locale){
 const browser=await chromium.launch({channel:"chrome",headless:true});
 for(const locale of ["en","zh-Hant"]){
   const {context,page}=await createPage(browser,locale);
-  await page.screenshot({path:resolve(output,`v021-queue-${locale}.png`)});
+  await page.screenshot({path:resolve(output,`v022-queue-${locale}.png`)});
   await page.getByText(locale==="en"?"Export release data":"匯出版本資料",{exact:true}).click(); await page.waitForTimeout(2600);
-  await page.screenshot({path:resolve(output,`v021-approval-${locale}.png`)});
+  await page.screenshot({path:resolve(output,`v022-approval-${locale}.png`)});
   await page.getByRole("button",{name:locale==="en"?"Tasks":"任務管理"}).click(); await page.waitForTimeout(300);
   await page.getByText(locale==="en"?"Build a document index":"建立文件索引",{exact:true}).click(); await page.waitForTimeout(2600);
-  await page.screenshot({path:resolve(output,`v021-files-${locale}.png`)});
+  await page.screenshot({path:resolve(output,`v022-files-${locale}.png`)});
   await context.close();
 }
 await browser.close(); console.log(output);

@@ -2,7 +2,7 @@ import { useBackgroundTheme } from "@/lib/background-theme";
 import { requestTaskDeepLink } from "@/lib/task-deep-link";
 import { startPushPresence } from "@/lib/push-presence";
 import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
-import { MessageSquare, Settings } from "lucide-react";
+import { Bot, Settings } from "lucide-react";
 import { Onboarding } from "./onboarding";
 import { Roster } from "./roster";
 import { ChatView } from "./chat-view";
@@ -29,6 +29,7 @@ import { deepLinkFromPwaSearch, stripPwaLocationSecrets } from "@/lib/origin";
 import { consumeSetupBootstrap } from "@/lib/local-setup";
 import { getBotProfiles } from "@/lib/native-bot";
 import { historyView, pushChatHistory, seedAppHistory } from "@/lib/app-history";
+import { bindPortraitOrientation } from "@/lib/orientation";
 
 export function DeskApp() {
   const wallpaper = useBackgroundTheme();
@@ -53,6 +54,7 @@ export function DeskApp() {
   const bots = useDesk((s) => s.bots);
   const locale = resolveLocale(useDesk((s) => s.locale));
   const [launch, setLaunch] = useState(true);
+  const [portraitFallback, setPortraitFallback] = useState(false);
   const dismissLaunch = useCallback(() => setLaunch(false), []);
 
   useEffect(() => {
@@ -91,6 +93,7 @@ export function DeskApp() {
       const secret = await readPassword(origin);
       if (credentialStorageUnavailable()) useDesk.getState().pushNotice(useDesk.getState().locale === "en" ? "Secure key storage is unavailable. Enter your key again after closing this page." : "無法使用安全金鑰儲存；關閉此頁面後需要重新輸入金鑰。");
       useDesk.setState((s) => ({
+        view: "roster",
         connection: sanitizeHydratedConnection(s.connection, secret),
         messages: sanitizeStoredMessages(s.messages),
         approvals: sanitizeStoredApprovals(s.approvals),
@@ -140,6 +143,7 @@ export function DeskApp() {
   }, [onboarded, hydrated]);
 
   useEffect(() => bindVisualViewport(), []);
+  useEffect(() => bindPortraitOrientation(setPortraitFallback), []);
 
   useEffect(() => {
     if (!hydrated || !onboarded) return;
@@ -256,13 +260,13 @@ export function DeskApp() {
               label={t(locale, "desk.tabRoster")}
               active={view === "roster"}
               onClick={() => setView("roster")}
-              icon={<MessageSquare className="size-5" strokeWidth={1.8} />}
+              icon={<Bot className="size-6" strokeWidth={1.7} />}
             />
             <TabButton
               label={t(locale, "desk.tabSettings")}
               active={view === "settings"}
               onClick={() => setView("settings")}
-              icon={<Settings className="size-5" strokeWidth={1.8} />}
+              icon={<Settings className="size-6" strokeWidth={1.7} />}
             />
           </nav>
         ) : null}
@@ -273,6 +277,9 @@ export function DeskApp() {
   return (
     <>
       {launch ? <LaunchScreen onDone={dismissLaunch} /> : null}
+      {portraitFallback ? <div className="fixed inset-0 z-[200] grid place-items-center bg-black px-8 text-center text-white" style={{ paddingTop: "max(2rem, env(safe-area-inset-top))", paddingBottom: "max(2rem, env(safe-area-inset-bottom))" }} role="status" aria-live="polite">
+        <p className="max-w-sm text-base font-medium">{locale === "en" ? "Rotate your device to portrait to continue." : "請將裝置轉回直向以繼續使用。"}</p>
+      </div> : null}
       {main}
     </>
   );
@@ -293,13 +300,13 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
+      aria-label={label}
       className={cn(
-        "flex h-12 flex-1 flex-col items-center justify-center gap-0.5 text-[0.7rem] font-medium",
+        "grid h-12 flex-1 place-items-center",
         active ? "text-fg" : "text-subtle",
       )}
     >
       {icon}
-      {label}
     </button>
   );
 }

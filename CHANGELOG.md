@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.2
+
+### English
+
+- Start a fresh PWA opening at Contacts, preserve active tasks across transient polling failures, and prevent duplicate back-navigation entries.
+- Use a shared 280 ms card transition for Bot and Session navigation; keep the page mounted until its exit animation completes.
+- Bound supplementary artifact scans to one deadline, including authentication refresh and response reads; clear deleted-task client and retry references.
+- Keep scheduled-job availability stable across temporary probe failures and show an explicit retrying state when the Jobs endpoint is unavailable.
+- Tighten same-origin checks for Session routes and disable HTTP caching of entry HTML across hashed-asset deployments.
+- Remove Hermes request abort listeners after completion, and let optional notification sources fail without blocking browser notification enrollment.
+- Add portrait PWA orientation and refine mobile navigation, safe-area handling, schedule controls, and task workspace layout.
+
+Local validation: 356 automated tests, type checking, zero-warning lint, production build, and the browser regression (including intermediate card movement) passed. Synthetic WebKit and Chrome checks also pass the history-isolation and animation-guard regressions. These checks do not establish a real-device fix: on a real iPhone, the user reports a conversation jump followed by a white unstyled screen with an oversized logo when a completed Session syncs back to the Bot. Completion summaries now update in a single deduplicated batch, but real-device acceptance is still required. iPhone acceptance remains open. Installed mobile builds retry the native portrait lock; unsupported platforms receive a portrait-only fallback overlay. The manifest and native lock are best-effort platform behavior, not a universal OS lock. GitHub CI covers source boundaries, clean install, static checks, automated suites, build, and isolated Chromium browser regression, but not live Hermes behavior, live notification delivery, iPhone, Windows, or fresh Linux installation. iPhone download-return layout recovery remains pending.
+
+### 繁體中文
+
+- PWA 重新開啟時回到聯絡人；暫時輪詢失敗時保留目前任務，並修正重複返回紀錄。
+- Bot 與 Session 共用 280 毫秒卡片轉場，等待退出動畫完成再卸載頁面。
+- 附件補充掃描、登入更新與回應讀取共用整體期限；已確認刪除的任務會清除連線參照與重試狀態。
+- 排程端點暫時探測失敗時維持既有可用狀態；Jobs 無法使用時顯示明確的重試提示。
+- 加強 Session 路由同源檢查，停用入口 HTML 的 HTTP 快取，降低更新後沿用舊資產參照的風險。
+- Hermes 請求結束後清理中止監聽器；選用通知來源失敗時，不阻塞瀏覽器通知註冊。
+- 新增直向 PWA 方向設定，並調整手機導覽、安全區域、排程控制與任務工作區版面。
+
+本機驗證：356 項自動測試、型別檢查、零警告 lint、正式建置及含卡片中途位移的瀏覽器回歸測試皆通過。合成 WebKit 與 Chrome 檢查也通過 history isolation 及 animation guard 回歸，但不能證明實機已修好：使用者回報實機 iPhone 在 Session 完成同步回 Bot 時，對話先跳動，再出現白色未套樣式畫面與巨大 Logo。完成摘要已改成單次批次更新與去重，仍需實機驗收；iPhone 驗收仍未完成。已安裝的行動版會重試原生直向鎖定；不支援的平台會顯示僅限直向的覆蓋提示。Manifest 與原生鎖定是盡力的平台行為，不是所有作業系統都能強制鎖定直向。GitHub CI 涵蓋來源邊界、乾淨安裝、靜態檢查、自動化測試、建置及隔離的 Chromium 瀏覽器回歸，但不涵蓋真實 Hermes、實機通知投遞、iPhone、Windows 或全新 Linux 安裝驗證。iPhone 關閉下載預覽後的版面恢復仍待驗證。
+
 ## 0.2.1
 
 ### English

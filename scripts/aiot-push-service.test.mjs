@@ -152,14 +152,15 @@ test('foreground leases suppress only that device, release per tab, and expire s
     const a = await call('subscribe',{subscription:sub});
     const b = await call('subscribe',{subscription:{...sub,endpoint:sub.endpoint+'-second'}});
     assert.equal((await call('presence',{id:a.id,clientId:'tab-one-123',visible:true})).code,200);
-    await call('test',{id:a.id});await call('test',{id:b.id});assert.deepEqual(sent,[sub.endpoint+'-second']);
+    await call('test',{id:a.id});await call('test',{id:b.id});
+    assert.deepEqual(sent,[sub.endpoint,sub.endpoint+'-second'],'manual tests reach Chrome even while the settings tab is visible');
     await call('presence',{id:a.id,clientId:'tab-two-123',visible:true});
     await call('presence',{id:a.id,clientId:'tab-one-123',visible:false});
-    await call('test',{id:a.id});assert.equal(sent.length,1);
-    await call('presence',{id:a.id,clientId:'tab-two-123',visible:false});
-    await call('test',{id:a.id});assert.equal(sent.length,2);
-    await call('presence',{id:a.id,clientId:'tab-one-123',visible:true});clock=15001;
     await call('test',{id:a.id});assert.equal(sent.length,3);
+    await call('presence',{id:a.id,clientId:'tab-two-123',visible:false});
+    await call('test',{id:a.id});assert.equal(sent.length,4);
+    await call('presence',{id:a.id,clientId:'tab-one-123',visible:true});clock=15001;
+    await call('test',{id:a.id});assert.equal(sent.length,5);
     assert.equal((await call('presence',{id:a.id,clientId:'x',visible:true})).code,400);
     assert.equal((await call('presence',{id:'unknown',clientId:'tab-one-123',visible:true})).code,404);
   } finally {service.close();rmSync(dataDir,{recursive:true,force:true});}
@@ -197,6 +198,47 @@ test('failed Bot channel cannot block task events, other sources, or retrying th
   } finally {service.close();rmSync(dataDir,{recursive:true,force:true});}
 });
 
+test('optional native and task channels do not block browser notification enrollment', async () => {
+  const dataDir=mkdtempSync(join(tmpdir(),'aiot-optional-push-'));
+  const service=createPushService({dataDir,pollMs:999999,
+    fetchImpl:async url=>({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),
+    nativeEvents:async()=>{throw Object.assign(new Error('native unavailable'),{status:503});},
+    taskEvents:async()=>{throw Object.assign(new Error('task unavailable'),{status:503});},
+    send:async()=>{},
+  });
+  try {
+    const req=Readable.from([JSON.stringify({subscription:sub})]);req.url='/api/pwa/push/subscribe';req.method='POST';req.headers={authorization:'Bearer valid'};
+    let code,result;await service.handle(req,{writeHead:c=>code=c,end:value=>{result=JSON.parse(value);}},'https://hermes.example/api/bot');
+    assert.equal(code,200);assert.equal(result.sourceReady,true);assert.match(result.id,/^[a-f0-9-]{36}$/i);
+  } finally {service.close();rmSync(dataDir,{recursive:true,force:true});}
+});
+
+test('a hung optional channel is reused until it settles while healthy channels continue', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiot-push-hung-'));
+  const rows = []; const sent = []; let nativeCalls = 0; let rejectNative;
+  const service = createPushService({ dataDir, pollMs: 999999, eventTimeoutMs: 5,
+    fetchImpl: async url => ({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),
+    nativeEvents: async () => {
+      nativeCalls += 1;
+      if (nativeCalls === 1) return new Promise((_, reject) => { rejectNative = reject; });
+      return { events: [] };
+    },
+    taskEvents: async after => ({ events: rows.filter(row => row.seq > after) }),
+    send: async (_sub, payload) => sent.push(JSON.parse(payload)),
+  });
+  const req = Readable.from([JSON.stringify({subscription:sub})]); req.url='/api/pwa/push/subscribe';req.method='POST';req.headers={authorization:'Bearer valid'};
+  try {
+    await service.handle(req,{writeHead:code=>assert.equal(code,200),end:()=>{}},'https://hermes.example/api/bot');
+    rows.push({seq:1,kind:'turn_complete',profile:'demo',conversation:'chat',event_id:'live',payload:{outcome:'success'}});
+    await service.tick(); await service.tick();
+    assert.equal(nativeCalls, 1, 'timed-out provider remains the one in-flight call');
+    assert.equal(sent.length, 1, 'healthy task events still deliver');
+    rejectNative(new Error('provider stopped')); await new Promise(resolve => setImmediate(resolve));
+    await service.tick();
+    assert.equal(nativeCalls, 2, 'a settled rejection releases the channel gate');
+  } finally { service.close(); rmSync(dataDir,{recursive:true,force:true}); }
+});
+
 test('device locale localizes task approval and completion while retaining a safe task destination', async () => {
   const dataDir=mkdtempSync(join(tmpdir(),'aiot-locale-'));const rows=[];const sent=[];
   const service=createPushService({dataDir,pollMs:999999,fetchImpl:async url=>({ok:true,json:async()=>url.includes('/profiles')?{profiles:[]}:{events:[]}}),nativeEvents:async()=>({events:[]}),taskEvents:async after=>({events:rows.filter(e=>e.seq>after)}),send:async(s,p)=>sent.push({endpoint:s.endpoint,...JSON.parse(p)})});
@@ -208,12 +250,12 @@ test('device locale localizes task approval and completion while retaining a saf
       assert.equal((await call('presence',{id,clientId:'example-tab',visible:false,locale:'bad'})).code,400);
     }
     const taskId='2aaace91-a893-4ffd-b652-1c445c4ded45';
-    rows.push({seq:1,kind:'approval_request',profile:'demo',conversation:'parent',taskId,event_id:'request',payload:{command:'secret'}});
+    rows.push({seq:1,kind:'approval_request',profile:'demo',conversation:'parent',taskId,taskMode:'fork',event_id:'request',payload:{command:'secret'}});
     await service.tick();
-    rows.push({seq:2,kind:'turn_complete',profile:'demo',conversation:'parent',taskId,event_id:'turn'});
+    rows.push({seq:2,kind:'turn_complete',profile:'demo',conversation:'parent',taskId,taskMode:'independent',event_id:'turn',payload:{text:'result Bearer token /private/work secret answer'}});
     await service.tick();
-    assert.deepEqual(sent.map(x=>x.body).sort(),['Approval requested','New reply','有新的回覆','需要你批准'].sort());
-    assert.ok(sent.every(x=>x.taskId===taskId));assert.ok(!JSON.stringify(sent).includes('secret'));
+    assert.deepEqual(sent.map(x=>x.body).sort(),['Forked task needs approval','Independent task complete：result','獨立任務已完成：result','分支任務需要你批准'].sort());
+    assert.ok(sent.every(x=>x.taskId===taskId));assert.ok(!JSON.stringify(sent).match(/secret|token|private/i));
   }finally{service.close();rmSync(dataDir,{recursive:true,force:true});}
 });
 

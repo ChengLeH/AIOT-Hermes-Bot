@@ -87,7 +87,7 @@ test("reconnect restores the prior contact without a device-local conversation i
     profiles: [{ name: "alpha" }, { name: "beta" }],
     stored,
   });
-  assert.equal(restored.view, "chat");
+  assert.equal(restored.view, "roster");
   assert.equal(restored.profile, "alpha");
   assert.equal(restored.conversation, null);
   assert.deepEqual(restored.conversations, {});

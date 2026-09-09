@@ -72,11 +72,17 @@ test("service worker defaults to aiot and sanitizes approval payloads", () => {
   assert.match(sw, /searchParams.set\("session"/);
 });
 
-test("task notifications retain only a valid task id and localized generic text", () => {
+test("push text identifies Bot and task modes while stripping unsafe previews", () => {
   const taskId = "2aaace91-a893-4ffd-b652-1c445c4ded45";
   const card = sanitizeVisiblePush({ kind: "approval_request", taskId, locale: "zh-Hant", body: "secret command" });
   assert.equal(card.taskId, taskId);
   assert.equal(card.body, "需要你批准");
   assert.equal(sanitizeVisiblePush({kind:"complete",locale:"zh-Hant",body:"secret"}).body,"有新的回覆");
+  assert.equal(sanitizeVisiblePush({kind:"complete",taskId,taskMode:"independent",preview:"Done"}).body,"Independent task complete：Done");
+  assert.equal(sanitizeVisiblePush({kind:"complete",taskId,taskMode:"fork",locale:"zh-Hant",preview:"完成"}).body,"分支任務已完成：完成");
+  assert.equal(sanitizeVisiblePush({kind:"approval_request",taskId,taskMode:"fork",locale:"zh-Hant",command:"secret"}).body,"分支任務需要你批准");
+  const privatePreview = sanitizeVisiblePush({kind:"complete",preview:"tool call\nreply\nBearer token /etc/hosts C:\\work\\secret ./private/file sk-proj-1234567890123456 ghp_abcdefghijklmnopqrstuvwxyz1234567890 secret answer"});
+  assert.equal(privatePreview.body,"New reply：reply");
+  assert.doesNotMatch(JSON.stringify(privatePreview), /token|private|etc|work|sk-proj|ghp_|secret/i);
   assert.equal(sanitizeVisiblePush({kind:"approval_request",taskId:"../../secret"}).taskId,undefined);
 });

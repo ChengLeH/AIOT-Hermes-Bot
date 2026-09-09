@@ -7,6 +7,8 @@ import { artifactMimeForName, collectToolArtifacts } from './aiot-session-artifa
 
 const loopback = req => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
 const json = (res, status, data) => { res.writeHead(status, {'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff'}); res.end(JSON.stringify(data)); };
+// Official resume includes attachment history; retain a finite authenticated frame budget.
+export const SESSION_FRAME_MAX_BYTES = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
 const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
@@ -63,12 +65,19 @@ async function body(req) {
   let text=''; for await (const chunk of req) { text+=chunk; if(Buffer.byteLength(text)>65536) throw new Error('request_too_large'); }
   return text ? JSON.parse(text) : {};
 }
-async function boundedBuffer(response, maxBytes) {
+async function boundedBuffer(response, maxBytes, signal) {
   const declared=Number(response.headers.get('content-length')||0);
   if(declared>maxBytes||!response.body?.getReader) throw new Error('artifact_too_large');
   const reader=response.body.getReader();const chunks=[];let size=0;
-  try { while(true){const {value,done}=await reader.read();if(done)break;size+=value.byteLength;if(size>maxBytes)throw new Error('artifact_too_large');chunks.push(Buffer.from(value));} }
-  catch(error){await reader.cancel().catch(()=>{});throw error;} finally {reader.releaseLock();}
+  let onAbort;
+  const read=async()=>{
+    if(!signal)return reader.read();
+    if(signal.aborted)throw signal.reason;
+    const aborted=new Promise((_,reject)=>{onAbort=()=>reject(signal.reason);signal.addEventListener('abort',onAbort,{once:true});});
+    try{return await Promise.race([reader.read(),aborted]);}finally{signal.removeEventListener('abort',onAbort);}
+  };
+  try { while(true){const {value,done}=await read();if(done)break;size+=value.byteLength;if(size>maxBytes)throw new Error('artifact_too_large');chunks.push(Buffer.from(value));} }
+  catch(error){void reader.cancel().catch(()=>{});throw error;} finally {reader.releaseLock();}
   return Buffer.concat(chunks);
 }
 function safeDownloadName(name){return String(name||'artifact').replace(/[\r\n"\\/]/g,'_').slice(0,240)||'artifact';}
@@ -81,7 +90,8 @@ function validArtifactBytes(bytes,mime){
   if(mime==='application/pdf')return bytes.subarray(0,5).toString('ascii')==='%PDF-';
   return true;
 }
-export function createSessionService({dataDir, fetchImpl=fetch, rpcClientFactory=createSessionRpcClient}) {
+export function createSessionService({dataDir, fetchImpl=fetch, rpcClientFactory=createSessionRpcClient, artifactScanTimeoutMs=30_000}) {
+  if(!Number.isSafeInteger(artifactScanTimeoutMs)||artifactScanTimeoutMs<=0)throw new Error('invalid_artifact_scan_timeout');
   const cipher=createPrivateStateCipher({dataDir,fileName:'task-sessions.json'});
   let state=cipher.read(()=>({tasks:[],auth:{}}));
   const save=()=>cipher.write(state);
@@ -93,19 +103,24 @@ export function createSessionService({dataDir, fetchImpl=fetch, rpcClientFactory
     write:(owner,record)=>{state.auth ||= {}; if(record) state.auth[owner]=record; else delete state.auth[owner]; save();}, fetchImpl,
   });
   async function loadTaskArtifacts(task){
-    const limit=100;const messages=[];
-    for(let offset=0;offset<500;offset+=limit){
-      const query=new URLSearchParams({profile:task.profile,limit:String(limit),offset:String(offset),order:'oldest',include_compacted:'true'});
-      const path=`/api/sessions/${encodeURIComponent(task.storedSessionId)}/messages?${query}`;
-      const response=await auth.get(task.owner,path,'application/json');
-      if(!response.ok||!response.headers.get('content-type')?.toLowerCase().includes('application/json'))throw new Error('artifact_history_unavailable');
-      const bytes=await boundedBuffer(response,MAX_HISTORY_BYTES);
-      let payload;try{payload=JSON.parse(bytes.toString('utf8'));}catch{throw new Error('artifact_history_unavailable');}
-      const page=Array.isArray(payload)?payload:Array.isArray(payload?.messages)?payload.messages:null;
-      if(!page)throw new Error('artifact_history_unavailable');
-      messages.push(...page);if(page.length<limit)break;
-    }
-    return collectToolArtifacts(messages);
+    const scanController=new AbortController();
+    const scanTimer=setTimeout(()=>scanController.abort(new Error('artifact_scan_timeout')),artifactScanTimeoutMs);
+    scanTimer.unref?.();
+    try {
+      const limit=100;const messages=[];
+      for(let offset=0;offset<500;offset+=limit){
+        const query=new URLSearchParams({profile:task.profile,limit:String(limit),offset:String(offset),order:'oldest',include_compacted:'true'});
+        const path=`/api/sessions/${encodeURIComponent(task.storedSessionId)}/messages?${query}`;
+        const response=await auth.get(task.owner,path,'application/json',{signal:scanController.signal});
+        if(!response.ok||!response.headers.get('content-type')?.toLowerCase().includes('application/json'))throw new Error('artifact_history_unavailable');
+        const bytes=await boundedBuffer(response,MAX_HISTORY_BYTES,scanController.signal);
+        let payload;try{payload=JSON.parse(bytes.toString('utf8'));}catch{throw new Error('artifact_history_unavailable');}
+        const page=Array.isArray(payload)?payload:Array.isArray(payload?.messages)?payload.messages:null;
+        if(!page)throw new Error('artifact_history_unavailable');
+        messages.push(...page);if(page.length<limit)break;
+      }
+      return collectToolArtifacts(messages);
+    } finally { clearTimeout(scanTimer); }
   }
   const runtime=createTaskSessions({
     readState:()=>state,
@@ -124,7 +139,7 @@ export function createSessionService({dataDir, fetchImpl=fetch, rpcClientFactory
       const promise=(async()=>{
         const status=await auth.status(owner);
         if(!status.authenticated) throw new Error('session_login_required');
-        const client=rpcClientFactory({dashboardBase:status.dashboardOrigin,maxFrameBytes:15*1024*1024,ticketProvider:()=>auth.ticket(owner),onDisconnect:()=>{if(clients.get(owner)!==client)return;clients.delete(owner);return runtime.connectionLost(owner);},onEvent:event=>{if(clients.get(owner)!==client)return;void runtime.onEvent(owner,event).catch(()=>{client.close();clients.delete(owner);void runtime.connectionLost(owner).catch(()=>{});});}});
+        const client=rpcClientFactory({dashboardBase:status.dashboardOrigin,maxFrameBytes:SESSION_FRAME_MAX_BYTES,ticketProvider:()=>auth.ticket(owner),onDisconnect:()=>{if(clients.get(owner)!==client)return;clients.delete(owner);return runtime.connectionLost(owner);},onEvent:event=>{if(clients.get(owner)!==client)return;void runtime.onEvent(owner,event).catch(()=>{client.close();clients.delete(owner);void runtime.connectionLost(owner).catch(()=>{});});}});
         try { await client.connect(); if(closed) throw new Error('service_closed'); } catch { client.close(); throw new Error('session_connection_failed'); }
         clients.set(owner,client);return client;
       })();
@@ -136,7 +151,7 @@ export function createSessionService({dataDir, fetchImpl=fetch, rpcClientFactory
       if((state.reports||[]).some(event=>event.owner===task.owner&&event.approvalKey===task.approvalKey)) return;
       const reportSeq=(state.reportSeq||0)+1;
       const report={owner:task.owner,approvalKey:task.approvalKey,seq:reportSeq,
-        profile:task.profile,conversation:task.parentConversation,kind:'approval_request',
+        profile:task.profile,conversation:task.parentConversation,kind:'approval_request',taskMode:task.mode,
         event_id:`approval-${task.approvalKey}`,taskId:task.id,payload:{request_id:task.requestId}};
       const previous=state;
       state={...state,reportSeq,reports:[...(state.reports||[]),report].slice(-2000)};
@@ -145,7 +160,7 @@ export function createSessionService({dataDir, fetchImpl=fetch, rpcClientFactory
     onCompleted:async task=>{
       if((state.reports||[]).some(e=>e.completionKey===task.completionKey && e.owner===task.owner)) return;
       const reportSeq=(state.reportSeq||0)+1;
-      const report={owner:task.owner,completionKey:task.completionKey,seq:reportSeq,profile:task.profile,conversation:task.parentConversation,kind:'turn_complete',event_id:`task-${task.id}-${Date.now()}`,payload:{outcome:'success'},taskId:task.id,title:task.title};
+      const report={owner:task.owner,completionKey:task.completionKey,seq:reportSeq,profile:task.profile,conversation:task.parentConversation,kind:'turn_complete',event_id:`task-${task.id}-${Date.now()}`,payload:{outcome:'success'},taskId:task.id,taskMode:task.mode,title:task.title};
       const previous=state;
       state={...state,reportSeq,reports:[...(state.reports||[]),report].slice(-2000)};
       try { save(); } catch(error) { state=previous;throw error; }

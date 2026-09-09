@@ -1,3 +1,4 @@
+import { isVisibleActiveApproval } from "@/lib/approvals";
 import { TaskWorkspace, type TaskWorkspaceHandle } from "./task-workspace";
 import { ForkIcon, IndependentTaskIcon } from "./fork-icon";
 import { recentTaskContext } from "@/lib/task-context";
@@ -54,6 +55,7 @@ import { cn } from "@/lib/utils";
 import { findMessageMatches, nextMatchIndex, searchCountLabel } from "@/lib/chat-search";
 import { jumpLatestBottomPx, transcriptAwayFromBottom } from "@/lib/jump-latest";
 import { backToRoster, closeSearchHistory, historySearchOpen, pushSearchHistory } from "@/lib/app-history";
+import { afterCardStartPaint, waitForCardAnimation } from "@/lib/card-motion";
 
 function blurTextInput() {
   const focused = document.activeElement;
@@ -61,6 +63,7 @@ function blurTextInput() {
 }
 
 export function ChatView() {
+  const cardRef = useRef<HTMLElement | null>(null);
   const activeBotId = useDesk((s) => s.activeBotId);
   const currentView = useDesk((s) => s.view);
   useEffect(() => {
@@ -84,10 +87,14 @@ export function ChatView() {
   const locale = resolveLocale(useDesk((s) => s.locale));
   const approvals = useDesk((s) => s.approvals);
   const taskWorkspaceRef = useRef<TaskWorkspaceHandle>(null);
+  const cancelPendingCardMotion = useRef<(() => void) | null>(null);
+  const [cardMotion, setCardMotion] = useState<"preparing" | "entering" | "idle" | "exiting">("preparing");
   const [forkArmed, setForkArmed] = useState(false);
   const [independentArmed, setIndependentArmed] = useState(false);
   const [taskError, setTaskError] = useState("");
   const [creatingTask, setCreatingTask] = useState(false);
+  useLayoutEffect(() => afterCardStartPaint(() => setCardMotion((current) => current === "preparing" ? "entering" : current)), []);
+  useEffect(() => () => cancelPendingCardMotion.current?.(), []);
   const scheduleDockRef = useRef<ScheduleDockHandle>(null);
   const approvalDockRef = useRef<ApprovalDockHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -101,7 +108,6 @@ export function ChatView() {
   const chipsRef = useRef<QueuedAttachment[]>([]);
   const cacheRef = useRef(createCompletionCache());
   const abortRef = useRef<AbortController | null>(null);
-  const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const tokenRef = useRef<CompletionToken | null>(null);
   const [uploadFeedback, setUploadFeedback] = useState<{ id: string; ok: boolean } | null>(null);
   const [chips, setChipsState] = useState<QueuedAttachment[]>([]);
@@ -124,7 +130,8 @@ export function ChatView() {
   const [away, setAway] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
   const [nativeQueue, setNativeQueue] = useState<NativeQueuedTurn[]>([]);
-  const [scheduleExpanded, setScheduleExpanded] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const leavingRef = useRef(false);
 
   const bot = bots.find((b) => b.id === activeBotId);
   const thread = messages.filter((m) => m.botId === activeBotId);
@@ -401,7 +408,11 @@ export function ChatView() {
     if (finding) { closeFinding(); return; }
     if (scheduleDockRef.current?.collapse()) return;
     if (approvalDockRef.current?.collapse()) return;
-    backToRoster(() => setView("roster"));
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    setLeaving(true);
+    setCardMotion("exiting");
+    cancelPendingCardMotion.current = waitForCardAnimation(cardRef.current, "chat-card-exit", () => backToRoster(() => setView("roster")));
   }
 
   async function interruptTurn() {
@@ -574,21 +585,8 @@ export function ChatView() {
   const token = liveToken;
 
   return (
-    <section
-      className="app-theme-surface relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg"
-      onTouchStart={(event) => {
-        const touch = event.touches[0];
-        swipeStart.current = touch && touch.clientX <= 28 ? { x: touch.clientX, y: touch.clientY } : null;
-      }}
-      onTouchEnd={(event) => {
-        const start = swipeStart.current;
-        swipeStart.current = null;
-        const touch = event.changedTouches[0];
-        if (!start || !touch) return;
-        if (touch.clientX - start.x >= 72 && Math.abs(touch.clientY - start.y) <= 64) leaveChat();
-      }}
-    >
-      <header className="chat-divider-bottom flex shrink-0 items-center gap-1 border-b border-border px-2 py-2 pr-2">
+    <section ref={cardRef} data-leaving={leaving ? "true" : "false"} data-card-motion={cardMotion} onAnimationEnd={(event) => { if (event.target === event.currentTarget && event.animationName === "chat-card-enter") setCardMotion((current) => current === "entering" ? "idle" : current); }} className="chat-view-card app-theme-surface relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg">
+      <header className="chat-status-header chat-divider-bottom flex shrink-0 items-center gap-1 border-b border-border px-2 py-2 pr-2">
         <button
           type="button"
           onClick={leaveChat}
@@ -772,22 +770,21 @@ export function ChatView() {
       ) : null}
 
       <div ref={composerRef} className="composer-dock shrink-0">
-        {working && !threadApprovals.some((card) => ["pending", "submitting", "error"].includes(card.status)) ? (
+        {working && !threadApprovals.some(isVisibleActiveApproval) ? (
           <div className="mx-auto w-full max-w-2xl md:max-w-none px-3 pt-3 pb-1" role="status">
             <WorkTicker swatch={bot.swatch} label={t(locale, "chat.workingBar", { name: bot.name })} className="w-full" />
           </div>
         ) : null}
         {live && <div className="task-navigation">
-          <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} onExpandedChange={setScheduleExpanded} />
-          <button type="button" style={{ gridColumn: 2, gridRow: scheduleExpanded ? 2 : 1 }} onClick={()=>taskWorkspaceRef.current?.openManager()} className="flex min-h-9 items-center justify-center gap-2 rounded-xl border border-border px-3 py-2 text-xs hover:bg-bg-elevated"><ListTodo className="size-4" />{locale === "en" ? "Tasks" : "任務管理"}</button>
-          <TaskWorkspace ref={taskWorkspaceRef} bot={bot} connection={connection} locale={locale} onCompleted={task=>{
-            const messageId=`aiot-task:${task.id}:${task.turn || 0}`;
-            const desk=useDesk.getState();
-            if(desk.connection.origin!==connection.origin || desk.connection.apiKey!==connection.apiKey || desk.messages.some(m=>m.messageId===messageId)) return;
-            desk.upsertEventMessage({profile:bot.profile,conversation:bot.conversation,messageId,role:"assistant",text:locale === "en" ? `Task completed: ${task.title}\nOpen Tasks to view the result or continue the conversation.` : `任務已完成：${task.title}\n可從「任務管理」查看結果或繼續追問。`});
-            desk.markUnread(bot.id, true);
-          }} />
+          <ScheduleDock key={`schedule-${connection.origin}-${bot.profile}-${bot.id}`} ref={scheduleDockRef} profile={bot.profile} name={bot.name} swatch={bot.swatch} origin={connection.origin} apiKey={connection.apiKey} locale={locale} />
+          <button type="button" onClick={()=>taskWorkspaceRef.current?.openManager()} className="task-navigation-button rounded-xl border border-border px-3 py-2 hover:bg-bg-elevated"><ListTodo className="size-4" />{locale === "en" ? "Tasks" : "任務管理"}</button>
         </div>}
+        {/* A transient probe failure must not unmount the active Session or erase its history. */}
+        {connection.origin && connection.apiKey && <TaskWorkspace ref={taskWorkspaceRef} bot={bot} connection={connection} locale={locale} onCompleted={tasks=>{
+            const desk=useDesk.getState();
+            if(desk.connection.origin!==connection.origin || desk.connection.apiKey!==connection.apiKey) return;
+            desk.upsertTaskCompletionMessages(tasks.map(task=>({botId:bot.id,messageId:`aiot-task:${task.id}:${task.turn || 0}`,text:locale === "en" ? `Task completed: ${task.title}\nOpen Tasks to view the result or continue the conversation.` : `任務已完成：${task.title}\n可從「任務管理」查看結果或繼續追問。`})));
+          }} />}
         {(forkArmed || independentArmed || chips.length > 0) && <div className="task-routing-hint mx-auto flex max-w-2xl md:max-w-none items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs text-fg">{forkSelected ? <ForkIcon /> : <IndependentTaskIcon />}<span className="flex-1">{forkSelected ? (locale === "en" ? "Fork task · includes up to 7 recent messages" : "分岔任務 · 帶入最近最多 7 則訊息") : (locale === "en" ? "Independent task · this message and attachments only" : "獨立任務 · 只帶入本次訊息與附件")}</span>{chips.length === 0 && <button type="button" aria-label={locale === "en" ? "Cancel task mode" : "取消任務模式"} onClick={()=>{setForkArmed(false);setIndependentArmed(false);areaRef.current?.blur();blurTextInput();}}><X className="size-4" /></button>}</div>}
         {taskError && <p role="alert" className="mx-auto max-w-2xl md:max-w-none px-3 py-2 text-sm">{taskError}</p>}
         <ApprovalDock

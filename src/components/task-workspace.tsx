@@ -19,6 +19,9 @@ import { findMessageMatches, nextMatchIndex, searchCountLabel } from "@/lib/chat
 import { subscribeTaskDeepLink, takeTaskDeepLink } from "@/lib/task-deep-link";
 import { PLAN_FADE_MS, projectTaskPlan, type SessionTodoState } from "@/lib/task-plan";
 import type { TaskContextMessage } from "@/lib/task-context";
+import { reconcileTaskWorkspaceHistory, taskWorkspaceMarker } from "@/lib/app-history";
+import { afterCardStartPaint, waitForCardAnimation } from "@/lib/card-motion";
+import { collectUnseenCompletedTasks } from "@/lib/task-completion";
 
 function blurTextInput() {
   const focused = document.activeElement;
@@ -70,7 +73,7 @@ export type TaskWorkspaceProps = {
   bot: { id: string; name: string; profile: string; swatch: string; conversation: string };
   connection: { origin: string; apiKey: string };
   locale: Locale;
-  onCompleted?: (task: WorkspaceTask) => void;
+  onCompleted?: (tasks: WorkspaceTask[]) => void;
 };
 type Panel = "manager" | "login" | "detail" | "new" | null;
 type Payload = { authenticated?: boolean; dashboardOrigin?: string; authorizeURL?: string; tasks?: WorkspaceTask[]; task?: WorkspaceTask; deletedIds?: string[]; failedIds?: string[] };
@@ -98,7 +101,10 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
   const panelRef = useRef<Panel>(null);
   const [managerOverDetail, setManagerOverDetail] = useState(false);
   const [animateEntry, setAnimateEntry] = useState(false);
-  const marker = useRef(`tasks-${Math.random().toString(36).slice(2)}`);
+  const [cardMotion, setCardMotion] = useState<"preparing" | "entering" | "idle" | "exiting">("idle");
+  const sessionPanel = useRef<HTMLDivElement | null>(null);
+  const cancelPendingMotion = useRef<(() => void) | null>(null);
+  const marker = useRef(taskWorkspaceMarker(bot.id, bot.profile, bot.conversation));
   const [finding, setFinding] = useState(false);
   const findingRef = useRef(false);
   const [findQuery, setFindQuery] = useState("");
@@ -188,6 +194,10 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
     area.style.height = `${Math.min(160, height)}px`;
     area.style.overflowY = height > 160 ? "auto" : "hidden";
   }, [draft, panel]);
+  useLayoutEffect(() => {
+    if (cardMotion !== "preparing" || panel === null || panel === "manager") return;
+    return afterCardStartPaint(() => setCardMotion((current) => current === "preparing" ? "entering" : current));
+  }, [cardMotion, panel]);
   const [error, setError] = useState(false);
   const [errorCode, setErrorCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -236,6 +246,7 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
     const current = panelRef.current;
     if (next === "manager" || current === "manager") blurTextInput();
     setAnimateEntry(next !== "manager" && current !== "detail");
+    if (next !== "manager" && current !== "detail") setCardMotion("preparing");
     setManagerOverDetail(current === "detail" && next === "manager");
     const state = window.history.state || {};
     if (current === "detail" && next === "manager" && selectedId.current && messageLog.current) {
@@ -261,10 +272,21 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
     blurTextInput();
     if (panelRef.current === "detail" && findingRef.current) { closeFinding(); return true; }
     if (returning.current) return true;
-    if (window.history.state?.aiotTaskWorkspace === marker.current) {
-      returning.current = true;
-      window.history.back();
-    } else { panelRef.current = null; setPanel(null); }
+    if (panelRef.current === "manager") {
+      if (window.history.state?.aiotTaskWorkspace === marker.current) {
+        returning.current = true;
+        window.history.back();
+      } else { panelRef.current = null; setPanel(null); }
+      return true;
+    }
+    const finishClose = () => {
+      if (window.history.state?.aiotTaskWorkspace === marker.current) {
+        window.history.back();
+      } else { returning.current = false; panelRef.current = null; setPanel(null); }
+    };
+    returning.current = true;
+    setCardMotion("exiting");
+    cancelPendingMotion.current = waitForCardAnimation(sessionPanel.current, "task-session-exit", finishClose);
     return true;
   }
   const request = useCallback(async (route: string, body?: Record<string, unknown>, id?: string): Promise<Payload> => {
@@ -293,16 +315,13 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
       return data;
     } finally { controllers.current.delete(controller); }
   }, [bot.id, bot.profile, connection.apiKey, connection.origin, localSetup]);
-  function report(task: WorkspaceTask) {
-    if (!["completed", "done"].includes(task.status)) return;
-    const key = `${task.id}:${task.turn ?? 0}`;
-    if (completed.current.has(key)) return;
-    completed.current.add(key);
-    completedRef.current?.(task);
+  function report(tasks: WorkspaceTask[]) {
+    const unseen = collectUnseenCompletedTasks(tasks, completed.current);
+    if (unseen.length) completedRef.current?.(unseen);
   }
   function acceptTask(task: WorkspaceTask) {
     setTasks((items) => [task, ...items.filter((item) => item.id !== task.id)]);
-    report(task);
+    report([task]);
     if (selectedId.current === task.id) setSelected(task);
   }
   async function create(text: string, attachments: AttachmentDescriptor[] = [], options: TaskCreateOptions = { mode: "independent", context: [] }) {
@@ -346,31 +365,41 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
         const list = await request("list");
         if (version !== revision.current) return;
         const items = Array.isArray(list.tasks) ? list.tasks : [];
-        setTasks(items);
+        setTasks(previous => JSON.stringify(previous) === JSON.stringify(items) ? previous : items);
         setStoppingTaskId((id) => id && items.some((task) => task.id === id && !["completed", "done", "failed", "interrupted", "cancelled", "canceled"].includes(task.status)) ? id : null);
         // The initial status check may finish after the user opens Tasks.
         // Once authenticated, leave the sign-in panel without another click.
         if (panelRef.current === "login") show("manager");
-        items.forEach(report);
+        report(items);
         const id = selectedId.current;
         if (id) {
           const detail = await request("detail", undefined, id);
-          if (version === revision.current && selectedId.current === id && detail.task) { setSelected(detail.task); report(detail.task); }
+          if (version === revision.current && selectedId.current === id && detail.task) { setSelected(previous => JSON.stringify(previous) === JSON.stringify(detail.task) ? previous : detail.task!); report([detail.task]); }
         }
-      } catch { if (alive.current && panelRef.current) setError(true); }
-      finally { if (alive.current) timer = setTimeout(() => void poll(), 2000); }
+      } catch {
+        // Polling is background synchronization. iOS pauses network requests
+        // while Quick Look is open; that transient failure must not replace a
+        // still-valid task with a false connection error. User actions keep
+        // their explicit error handling below.
+      }
+      finally { if (alive.current) timer = setTimeout(() => void poll(), 4000); }
     };
     void poll();
     const pop = () => {
+      cancelPendingMotion.current?.();
+      cancelPendingMotion.current = null;
       setAnimateEntry(false);
       returning.current = false;
-      const state = window.history.state;
+      const currentState = window.history.state;
+      const state = reconcileTaskWorkspaceHistory(currentState, workspaceMarker);
+      if (state !== currentState) window.history.replaceState(state, "");
       if (findingRef.current && !state?.aiotTaskSearch) blurTextInput();
       findingRef.current = state?.aiotTaskWorkspace === workspaceMarker && !!state.aiotTaskSearch;
       setFinding(findingRef.current);
       if (!findingRef.current) { setFindQuery(""); setFindIndex(0); }
-      let next: Panel = state?.aiotTaskWorkspace === workspaceMarker && ["manager", "detail", "new", "login"].includes(state.aiotTaskPanel) ? state.aiotTaskPanel : null;
-      if (next === "detail" && deletedTaskIds.current.has(state.aiotTaskId)) {
+      const panelValue = state.aiotTaskPanel;
+      let next: Panel = state.aiotTaskWorkspace === workspaceMarker && (panelValue === "manager" || panelValue === "detail" || panelValue === "new" || panelValue === "login") ? panelValue : null;
+      if (next === "detail" && typeof state.aiotTaskId === "string" && deletedTaskIds.current.has(state.aiotTaskId)) {
         next = "manager";
         window.history.replaceState({ ...state, aiotTaskPanel: "manager", aiotTaskId: null, aiotTaskReturn: null }, "");
       }
@@ -387,7 +416,9 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
       setPanel(next);
     };
     window.addEventListener("popstate", pop);
+    pop();
     return () => {
+      cancelPendingMotion.current?.();
       alive.current = false; clearTimeout(timer);
       activeControllers.forEach((controller) => controller.abort());
       window.removeEventListener("popstate", pop);
@@ -545,16 +576,16 @@ const ScopedTaskWorkspace = forwardRef<TaskWorkspaceHandle, TaskWorkspaceProps>(
   return <>
     <TaskManager open={panel === "manager"} name={bot.name} profile={bot.profile} swatch={bot.swatch} tasks={tasks} selectedTaskId={selectedId.current} locale={locale} onDelete={deleteTasks} onStop={(id) => void stopTask(id)} busy={busy} stoppingTaskId={stoppingTaskId} error={error ? (en ? "Unable to complete this request. Please try again." : "目前無法完成操作，請重試。") : undefined}
       onSelect={(id) => { if (selectedId.current !== id) { selectedId.current = id; setSelected(tasks.find((task) => task.id === id) ?? null); setDraft(""); } setError(false); show("detail"); }}
-      onCreate={() => { setDraft(""); setError(false); show("new"); }} onClose={close} />
+      onCreate={() => { setDraft(""); setError(false); show("new"); }} onClose={() => { if (panelRef.current === "manager") close(); }} />
     <Dialog.Root modal={!managerOverDetail} open={(panel !== null && panel !== "manager") || managerOverDetail} onOpenChange={(open) => { if (!open && panelRef.current !== "manager") close(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[110] bg-black/65 backdrop-blur-sm" />
-        <Dialog.Content data-enter={animateEntry ? "true" : "false"} className="task-session-panel fixed inset-y-0 right-0 z-[111] flex w-full max-w-xl flex-col border-l border-border bg-bg text-fg shadow-panel outline-none" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}
+        <Dialog.Content ref={sessionPanel} data-enter={animateEntry ? "true" : "false"} data-card-motion={cardMotion} onAnimationEnd={(event) => { if (event.target === event.currentTarget && event.animationName === "task-session-enter") setCardMotion((current) => current === "entering" ? "idle" : current); }} className="task-session-panel fixed inset-y-0 right-0 z-[111] flex w-full max-w-xl flex-col border-l border-border bg-bg text-fg shadow-panel outline-none" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "var(--app-safe-bottom, env(safe-area-inset-bottom))" }}
           onOpenAutoFocus={() => { focusReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
           onCloseAutoFocus={(event) => { event.preventDefault(); if (focusReturn.current?.isConnected && !focusReturn.current.matches("input, textarea, [contenteditable='true']")) focusReturn.current.focus({ preventScroll: true }); }}>
-          <header className="chat-divider-bottom flex items-center gap-2 border-b border-border px-3 py-2">
-            <BotAvatar profile={bot.profile} swatch={bot.swatch} size={38} />
-            <div className="min-w-0 flex-1"><Dialog.Title className="truncate text-sm font-semibold">{title}</Dialog.Title><Dialog.Description className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted"><span>{bot.name}</span></Dialog.Description></div>
+          <header className="chat-status-header chat-divider-bottom flex shrink-0 items-center gap-1 border-b border-border px-2 py-2 pr-2">
+            <BotAvatar profile={bot.profile} swatch={bot.swatch} size={36} />
+            <div className="min-w-0 flex-1 px-2"><Dialog.Title className="chat-title font-medium">{title}</Dialog.Title><Dialog.Description className="subhead-glyph truncate text-xs text-muted">{bot.name}</Dialog.Description></div>
             {authenticated && <button className={`${headerButton}${managerOverDetail ? " icon-toggle-active" : ""}`} aria-pressed={managerOverDetail} aria-label={en ? "Tasks" : "任務管理"} onClick={() => show("manager")}><ListTodo className="size-4" strokeWidth={1.8} /></button>}
             {inDetail && <button className={`${headerButton}${finding ? " icon-toggle-active text-accent" : " text-fg"}`} aria-label={t(locale, "chat.find")} aria-pressed={finding} onClick={toggleFinding}><Search className="size-4" strokeWidth={1.8} /></button>}
             <button className={headerButton} aria-label={en ? "Close" : "關閉"} onClick={close}><X className="size-4" strokeWidth={1.8} /></button>

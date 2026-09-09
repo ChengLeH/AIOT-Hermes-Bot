@@ -428,6 +428,33 @@ test('official partial deletion keeps failed records and retries the batch durab
   assert.deepEqual(restarted.calls.filter(([method]) => method === 'session.delete'), [['session.delete', { session_id: 'stored-second', profile: 'worker' }]]);
 });
 
+test('deleting a task clears its retry delay before the retained id is reused', async () => {
+  const f = fixture({ id: () => 'retained-id' });
+  const first = await f.create();
+  const normal = f.client.request;
+  let allowResume = false;
+  let resumeAttempts = 0;
+  f.client.request = async (method, params) => {
+    if (method === 'session.resume') {
+      f.calls.push([method, params]); resumeAttempts += 1;
+      if (!allowResume) throw new Error('offline');
+      return { session_id: 'resumed', running: false };
+    }
+    return normal(method, params);
+  };
+  await f.runtime.connectionLost('alice');
+  await f.runtime.reconcile();
+  assert.equal(resumeAttempts, 1);
+  await f.runtime.onEvent('alice', { type: 'message.complete', session_id: 'runtime-0', payload: { status: 'complete', text: 'done' } });
+  assert.deepEqual(await f.runtime.delete({ owner: 'alice', botId: 'bot', profile: 'worker', ids: [first.id] }), { deletedIds: ['retained-id'], failedIds: [] });
+  const second = await f.create();
+  assert.equal(second.id, 'retained-id');
+  await f.runtime.connectionLost('alice');
+  allowResume = true;
+  await f.runtime.reconcile();
+  assert.equal(resumeAttempts, 2, 'a retry delay from the deleted task cannot suppress the new task');
+});
+
 test('closing a runtime alone never counts as deletion of stored Hermes history', async () => {
   const f = fixture({ readState: () => ({ tasks: [{ id: 'task', owner: 'alice', botId: 'bot', profile: 'worker', status: 'completed', sessionId: 'runtime', storedSessionId: 'stored', messages: [] }] }) });
   const normal = f.client.request;
@@ -848,4 +875,16 @@ test('queued Session retry is idempotent and attachments are not staged into an 
   await assert.rejects(f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'changed',requestId}),/task_request_conflict/);
   await assert.rejects(f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'file',requestId:'44444444-4444-4444-8444-444444444444',attachments:[{id:'a',name:'x.txt',mime:'text/plain',size:1,bytes:Buffer.from('x')}]}),/task_queued_attachments_unsupported/);
   assert.equal(f.calls.some(([method])=>method==='file.attach'),false);
+});
+
+
+test('accepted stop settles after authoritative idle resume even without a terminal event', async () => {
+  const f = fixture(); const task = await f.create();
+  const original = f.client.request;
+  f.client.request = async (method, params) => method === 'session.interrupt' ? { status: 'interrupted' } : original(method, params);
+  await f.runtime.interrupt({ owner: 'alice', id: task.id });
+  await f.runtime.connectionLost('alice');
+  const restored = await f.runtime.get({ owner: 'alice', id: task.id });
+  assert.equal(restored.status, 'interrupted');
+  assert.equal(f.completed.length, 0);
 });

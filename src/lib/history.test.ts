@@ -61,7 +61,7 @@ test("send user+assistant image conversation, reload, re-enter credential, same 
   });
   assert.equal(afterReload.conversation, null);
   assert.equal(afterReload.profile, "alpha");
-  assert.equal(afterReload.view, "chat");
+  assert.equal(afterReload.view, "roster");
   assert.equal(sameConversation(CONV, CONV), true);
 
   const missingKey = restoreAfterProfiles({

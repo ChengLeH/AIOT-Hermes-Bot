@@ -1,6 +1,6 @@
 {
   "name": "aiot-hermes-bot",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "AIOT / Hermes Bot \u2014 your agent, in your pocket",
   "private": true,
   "sideEffects": false,
@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
+    "test:ui": "npm run build && node scripts/task-workspace.ui.mjs",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write src scripts vite.config.ts",
     "test:frontend": "node scripts/run-tests.mjs frontend",
