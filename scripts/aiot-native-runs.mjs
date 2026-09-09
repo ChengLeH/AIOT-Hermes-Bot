@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { sessionMessages } from "./aiot-session-history.mjs";
+import { loadRunContext } from "./aiot-run-context.mjs";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -395,9 +396,12 @@ export function createNativeRunsService({
       if (!PROFILE_RE.test(profile) || !conversation || !text || Object.keys(input).some((key) => !["profile", "conversation", "text"].includes(key))) return json(res, 400, { error: "invalid_request" });
       const ep = await endpoint(profile);
       if (!ep?.capabilities.run_submission || !ep.capabilities.run_events_sse) return json(res, 409, { error: "native_runs_unavailable" });
+      let conversationHistory;
+      try { conversationHistory = await loadRunContext(fetchImpl, ep, conversation); }
+      catch (error) { return json(res, 409, { error: error.message === "context_too_large" ? "context_too_large" : "context_unavailable" }); }
       const idempotency = randomUUID();
       const headers = { ...ep.headers, "Content-Type": "application/json", "Idempotency-Key": idempotency, "X-Hermes-Session-Key": `aiot:${profile}:${conversation}` };
-      const response = await fetchImpl(`${ep.base}/v1/runs`, { method: "POST", headers, body: JSON.stringify({ input: text, session_id: conversation }), redirect: "error" });
+      const response = await fetchImpl(`${ep.base}/v1/runs`, { method: "POST", headers, body: JSON.stringify({ input: text, session_id: conversation, conversation_history: conversationHistory }), redirect: "error" });
       const value = await response.json().catch(() => ({}));
       if (!response.ok || !ID_RE.test(String(value.run_id || ""))) return json(res, response.status || 502, value);
       const run = { runId: value.run_id, profile, conversation, status: "started", output: "", published: "", createdAt: Date.now() };

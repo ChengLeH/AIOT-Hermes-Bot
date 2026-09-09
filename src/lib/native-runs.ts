@@ -69,15 +69,15 @@ export async function postNativeRun(input: {
   profile: string;
   conversation: string;
   text: string;
-}): Promise<{ accepted: boolean; runId: string; status: number }> {
+}): Promise<{ accepted: boolean; runId: string; status: number; error?: string }> {
   const res = await hermesFetch(`${input.origin}/api/bot/native/runs`, {
     method: "POST",
     apiKey: input.apiKey,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ profile: input.profile, conversation: input.conversation, text: input.text }),
   });
-  const json = (await res.json().catch(() => ({}))) as { run_id?: unknown };
-  return { accepted: res.status === 202 && typeof json.run_id === "string", runId: typeof json.run_id === "string" ? json.run_id : "", status: res.status };
+  const json = (await res.json().catch(() => ({}))) as { run_id?: unknown; error?: unknown };
+  return { accepted: res.status === 202 && typeof json.run_id === "string", runId: typeof json.run_id === "string" ? json.run_id : "", status: res.status, error: typeof json.error === "string" ? json.error : undefined };
 }
 
 export async function getNativeRunEvents(origin: string, apiKey: string, after: number): Promise<{ events: BotWireEvent[]; status: number }> {

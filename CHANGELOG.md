@@ -1,5 +1,25 @@
 # Changelog / 更新內容
 
+## 0.1.4
+
+### English
+
+- Restore recent conversation history from the same profile's Hermes Session API before starting a native run. A session ID alone does not restore `/v1/runs` context. History loading errors stop submission and retain the draft rather than silently starting without context.
+- Use the latest 500 backend records, projecting user/assistant text only. Raw tool-call envelopes, reasoning and image bytes are not replayed; this is not full multimodal or tool-trace restoration. Histories above 256 Ki characters are rejected rather than silently truncated further.
+- Allow Send during attachment uploads: wait for uploads to finish, then submit once with attachment IDs. Failed uploads prevent submission. Repeated Send actions do not create duplicate messages.
+- Keep upload feedback pending while the app is hidden, then show the centered animation when visible. Batch feedback remains one outcome per selected batch.
+- Verified a two-turn context recall through the AIOT UI using a cloud-backed Bot. Upload timing and failure paths were tested with delayed browser fixtures.
+- **Known tool limitation:** profile CLI/Session toolsets and `api_server` toolsets may differ. AIOT reads profile skills but does not enable tools disabled by the API platform or change Hermes configuration. Skill discovery does not prove tool execution availability. Worker Sessions remain a proposal and are not included.
+
+### 繁體中文
+
+- 原生 run 送出前，先從同一 Profile 的 Hermes Session API 取回近期對話。只傳 session ID 不會讓 `/v1/runs` 恢復上下文；歷史讀取失敗時停止送出並保留草稿，不再默默以空白上下文執行。
+- 最多使用後端最近 500 筆紀錄，只接續使用者與助手文字；不重播原始工具呼叫結構、推理或圖片位元組，因此不是完整多模態或工具過程還原。文字超過 256 Ki 字元時明確停止，不再暗中裁切。
+- 附件上傳中可先按傳送：等待附件完成後攜帶附件 ID 送出一次。上傳失敗不送出，連按傳送不會重複發送。
+- App 位於背景時保留上傳提示，回到前景才顯示中央動畫；同一批附件仍只顯示一次結果。
+- 已透過 AIOT UI 驗證雲端 Bot 的兩輪上下文回想；上傳時序與失敗情境使用延遲回應的瀏覽器測試驗證。
+- **工具限制：**同一 Profile 的 CLI／Session 與 `api_server` 可有不同的工具啟用範圍。AIOT 讀取 Profile 的 Skills，但不會替 API 啟用被停用的工具，也不修改 Hermes 設定。清單看得到不代表能執行。工作 Session 功能仍在規劃，未包含在本版。
+
 ## 0.1.3
 
 ### UI follow-up / 介面追加更新

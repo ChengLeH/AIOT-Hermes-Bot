@@ -46,8 +46,9 @@ test("official Hermes runs stay behind the browser Bot key and keep API_SERVER_K
     if (String(url).endsWith("/v1/skills")) {
       return Response.json({ data: [{ name: "h3-prompt", description: "H3 prompts" }, { name: "host-bridge", description: "Host access" }] });
     }
+    if (String(url).includes("/api/sessions/bot-chat/messages")) return Response.json({ data: [{ role: "user", content: "previous question" }, { role: "assistant", content: "previous answer" }] });
     if (String(url).endsWith("/v1/runs") && options.method === "POST") {
-      assert.deepEqual(JSON.parse(options.body), { input: "hello", session_id: "bot-chat" });
+      assert.deepEqual(JSON.parse(options.body), { input: "hello", session_id: "bot-chat", conversation_history: [{role:"user",content:"previous question"},{role:"assistant",content:"previous answer"}] });
       assert.ok(options.headers["Idempotency-Key"]);
       return Response.json({ run_id: "run-one", status: "started" }, { status: 202 });
     }

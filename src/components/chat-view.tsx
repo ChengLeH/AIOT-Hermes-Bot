@@ -1,11 +1,11 @@
 import { createUploadBatch } from "@/lib/upload-batch";
-import { createPortal } from "react-dom";
+import { UploadFeedback } from "./upload-feedback";
 import { localizeSystemNotice } from "@/lib/system-notice";
 import { usePullRefresh } from "@/lib/pull-refresh";
 import { ScheduleDock, type ScheduleDockHandle } from "./schedule-dock";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronUp, Paperclip, Pin, Search, SendHorizontal, Square, X } from "lucide-react";
-import { AiotHead, BotAvatar, WorkTicker } from "./bot-avatar";
+import { ChevronDown, ChevronLeft, ChevronUp, LoaderCircle, Paperclip, Pin, Search, SendHorizontal, Square, X } from "lucide-react";
+import { BotAvatar, WorkTicker } from "./bot-avatar";
 import { MessageAttachments, QueuePreview } from "./attachment-media";
 import { CompletionMenu } from "./completion-menu";
 import { ApprovalCardView } from "./approval-card";
@@ -91,8 +91,15 @@ export function ChatView() {
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const tokenRef = useRef<CompletionToken | null>(null);
   const [uploadFeedback, setUploadFeedback] = useState<{ id: string; ok: boolean } | null>(null);
-  useEffect(() => { if (!uploadFeedback) return; const timer = window.setTimeout(() => setUploadFeedback(null), 2800); return () => clearTimeout(timer); }, [uploadFeedback]);
-  const [chips, setChips] = useState<QueuedAttachment[]>([]);
+  const [chips, setChipsState] = useState<QueuedAttachment[]>([]);
+  const uploadJobs = useRef(new Set<Promise<void>>());
+  const submitLock = useRef(false);
+  const [waitingUploads, setWaitingUploads] = useState(false);
+  function setChips(update: QueuedAttachment[] | ((previous: QueuedAttachment[]) => QueuedAttachment[])) {
+    const next = typeof update === "function" ? update(chipsRef.current) : update;
+    chipsRef.current = next;
+    setChipsState(next);
+  }
   const [cursor, setCursor] = useState(0);
   const [suggest, setSuggest] = useState<CompletionItem[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -103,7 +110,6 @@ export function ChatView() {
   const [findIndex, setFindIndex] = useState(0);
   const [away, setAway] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
-  chipsRef.current = chips;
 
   const bot = bots.find((b) => b.id === activeBotId);
   const thread = messages.filter((m) => m.botId === activeBotId);
@@ -117,9 +123,7 @@ export function ChatView() {
   const presenceOnline = bot ? botPresenceOnline({ live, available: bot.available }) : false;
   const caps = live ? connection.lastProbe?.capabilities : undefined;
   const uploadsOn = canUploadAttachments(caps);
-  const uploading = chips.some((c) => c.status === "uploading");
   const uploadError = chips.some((c) => c.status === "error");
-  const readyIds = chips.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!.id);
   const completionsOn = live && (canUseDynamicCompletions(caps) || bot?.nativeCapabilities?.skills === true) && Boolean(bot?.conversation);
   const interruptsOn = live && (canInterrupt(caps) || bot?.nativeCapabilities?.run_stop === true);
   const liveToken = completionsOn && bot ? detectCompletionToken(draft, cursor) : null;
@@ -387,40 +391,62 @@ export function ChatView() {
   }
 
   async function submit() {
-    const latest = useDesk.getState();
-    const current = latest.bots.find((b) => b.id === botId);
-    if (!current?.available || !current.conversation) return;
-    if (!connectionLive(latest.connection)) return;
-    if (isTurnBusy(latest.botState[botId], Boolean(latest.sending[botId]))) return;
-    if (uploading || uploadError) return;
-    const value = (latest.composerDrafts[botId] ?? "").trim();
-    const queued = chipsRef.current;
-    const ids = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!.id);
-    const meta = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!);
-    if (!value && ids.length === 0) return;
-    // Sending is the user's explicit navigation action. Apply it now, not when
-    // a slow acknowledgement arrives after they may have scrolled elsewhere.
-    followLatest.current = true;
-    closeFinding();
-    const pinSendStart = () => {
-      if (useDesk.getState().activeBotId !== botId) return;
-      const el = scroller.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-      lastScrollTop.current = el.scrollTop;
-      setAway(false);
-    };
-    pinSendStart();
-    requestAnimationFrame(pinSendStart);
-    const ok = await sendTask(botId, value, ids, meta);
-    if (ok) {
-      transferQueueToSession(queued);
-      setChips([]);
-      setSuggest([]);
+    if (submitLock.current) return;
+    submitLock.current = true;
+    const started = useDesk.getState().connection;
+    try {
+      if (uploadJobs.current.size) {
+        setWaitingUploads(true);
+        while (uploadJobs.current.size) await Promise.all([...uploadJobs.current]);
+      }
+      const afterUpload = useDesk.getState();
+      if (afterUpload.activeBotId !== botId || afterUpload.view !== "chat" ||
+          afterUpload.connection.origin !== started.origin || afterUpload.connection.apiKey !== started.apiKey) return;
+      const latest = useDesk.getState();
+      const current = latest.bots.find((b) => b.id === botId);
+      if (!current?.available || !current.conversation) return;
+      if (!connectionLive(latest.connection)) return;
+      if (isTurnBusy(latest.botState[botId], Boolean(latest.sending[botId]))) return;
+      if (chipsRef.current.some((item) => item.status !== "ready" || !item.attachment)) return;
+      const value = (latest.composerDrafts[botId] ?? "").trim();
+      const queued = chipsRef.current;
+      const ids = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!.id);
+      const meta = queued.filter((c) => c.status === "ready" && c.attachment).map((c) => c.attachment!);
+      if (!value && ids.length === 0) return;
+      // Sending is the user's explicit navigation action. Apply it now, not when
+      // a slow acknowledgement arrives after they may have scrolled elsewhere.
+      followLatest.current = true;
+      closeFinding();
+      const pinSendStart = () => {
+        if (useDesk.getState().activeBotId !== botId) return;
+        const el = scroller.current;
+        if (!el) return;
+        el.scrollTop = el.scrollHeight;
+        lastScrollTop.current = el.scrollTop;
+        setAway(false);
+      };
+      pinSendStart();
+      requestAnimationFrame(pinSendStart);
+      const ok = await sendTask(botId, value, ids, meta);
+      if (ok) {
+        transferQueueToSession(queued);
+        setChips([]);
+        setSuggest([]);
+      }
+    } finally {
+      submitLock.current = false;
+      setWaitingUploads(false);
     }
   }
 
-  async function onPick(files: FileList | null) {
+  function onPick(files: FileList | null) {
+    if (submitLock.current) return;
+    const job = uploadPickedFiles(files);
+    uploadJobs.current.add(job);
+    void job.finally(() => uploadJobs.current.delete(job));
+  }
+
+  async function uploadPickedFiles(files: FileList | null) {
     if (!uploadsOn || !files || !bot) return;
     const latest = useDesk.getState();
     const current = latest.bots.find((b) => b.id === botId);
@@ -429,7 +455,7 @@ export function ChatView() {
     const origin = latest.connection.origin;
     const apiKey = latest.connection.apiKey;
     const limit = maxAttachmentBytes(caps);
-    const room = MAX_ATTACHMENTS - chips.length;
+    const room = MAX_ATTACHMENTS - chipsRef.current.length;
     const picked = [...files].slice(0, Math.max(0, room));
     const finish = createUploadBatch(picked.length);
     const batchId = crypto.randomUUID();
@@ -480,9 +506,9 @@ export function ChatView() {
   }
 
   const canSend =
-    (draft.trim().length > 0 || readyIds.length > 0) &&
+    (draft.trim().length > 0 || chips.length > 0) &&
     !blocked &&
-    !uploading &&
+    !waitingUploads &&
     !uploadError &&
     bot.available &&
     live &&
@@ -711,7 +737,7 @@ export function ChatView() {
           }}
           className={cn("shrink-0 px-3 pt-2 pb-2", working ? "" : "border-t border-border")}
         >
-          {uploadFeedback && createPortal(<div key={uploadFeedback.id} role="status" className="upload-feedback"><span className={uploadFeedback.ok ? "upload-success-mascot" : "upload-error-mascot"}><AiotHead eye={uploadFeedback.ok ? "#91b69c" : "#bd777c"} className="size-12" /></span><span>{locale === "en" ? (uploadFeedback.ok ? "Upload complete" : "Upload failed") : (uploadFeedback.ok ? "上傳成功" : "上傳失敗")}</span></div>, document.body)}
+          {uploadFeedback && <UploadFeedback key={uploadFeedback.id} ok={uploadFeedback.ok} locale={locale} onDismiss={() => setUploadFeedback(null)} />}
           {chips.length > 0 ? (
             <ul className="mx-auto mb-2 flex max-w-2xl flex-wrap gap-1.5">
               {chips.map((c) => (
@@ -753,7 +779,7 @@ export function ChatView() {
                 />
                 <button
                   type="button"
-                  disabled={!live || !bot.available || !bot.conversation || chips.length >= MAX_ATTACHMENTS || blocked}
+                  disabled={!live || !bot.available || !bot.conversation || chips.length >= MAX_ATTACHMENTS || blocked || waitingUploads}
                   onClick={() => fileRef.current?.click()}
                   className="grid size-11 shrink-0 place-items-center rounded-xl bg-bg-elevated text-fg disabled:opacity-40"
                   aria-label={t(locale, "chat.attach")}
@@ -848,9 +874,9 @@ export function ChatView() {
                 type="submit"
                 disabled={!canSend}
                 className="grid size-11 min-h-[44px] min-w-[44px] shrink-0 place-items-center rounded-xl bg-accent text-accent-fg disabled:opacity-40"
-                aria-label={t(locale, "chat.send")}
+                aria-label={waitingUploads ? (locale === "en" ? "Waiting for uploads" : "等待附件上傳完成") : t(locale, "chat.send")}
               >
-                <SendHorizontal className="size-4" />
+                {waitingUploads ? <LoaderCircle className="size-4 animate-spin" /> : <SendHorizontal className="size-4" />}
               </button>
             )}
           </div>

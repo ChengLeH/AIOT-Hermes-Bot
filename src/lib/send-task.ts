@@ -56,6 +56,15 @@ export async function sendTask(
         return false;
       }
       if (!ack.accepted) {
+        if (!useDesk.getState().composerDrafts[botId]) useDesk.getState().setDraft(botId, trimmed);
+        const contextError = "error" in result ? result.error : undefined;
+        if (contextError === "context_unavailable" || contextError === "context_too_large") {
+          useDesk.getState().setBotState(botId, "idle");
+          useDesk.getState().pushActivity(botId, { label: state.locale === "en"
+            ? (contextError === "context_too_large" ? "Conversation history is too large to send safely. Your message was not sent." : "Could not load this Bot's conversation history. Your message was not sent; please retry.")
+            : (contextError === "context_too_large" ? "對話歷史過大，暫時無法安全送出。你的訊息尚未傳送。" : "無法讀取這位 Bot 的對話歷史，訊息尚未傳送，請稍後重試。"), kind: "wait" });
+          return false;
+        }
         useDesk.getState().setBotState(botId, "idle");
         useDesk.getState().pushActivity(botId, { label: "error.notAccepted", kind: "wait" });
         return false;

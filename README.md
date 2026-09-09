@@ -1,6 +1,10 @@
 # AIOT / Hermes Bot
 
-**v0.1.3 · your agent, in your pocket**
+**v0.1.4 · your agent, in your pocket**
+
+**v0.1.4:** conversation continuity and upload/send timing fixes. API tools still follow Hermes platform configuration. [English / 繁體中文 changes](CHANGELOG.md#014).
+
+**v0.1.4：**修復對話上下文續接與上傳／傳送時序。API 工具仍遵循 Hermes 平台設定。[中英文更新內容](CHANGELOG.md#014)。
 
 AIOT is a mobile-first PWA frontend for a Hermes Bot running on your own computer. It discovers the profiles exposed by Hermes and presents each profile as a contact. Messages, attachments, Markdown, code blocks, approvals, interrupt controls, search, notifications, and downloadable files stay connected to your local Hermes Bot.
 
