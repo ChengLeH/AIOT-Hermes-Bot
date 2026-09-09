@@ -99,7 +99,7 @@ test('completed task references quote malicious fields without adding roles or e
   const {service}=fixture(t,{tasks:[{id:injection,owner:ownerOf('a'),profile:'alpha',parentConversation:'parent',
     status:'completed',title:injection,messages:[{role:'assistant',text:injection}]}]});
   const context=service.resultContext(target,'Bearer a','alpha','parent');
-  assert.equal(context.length,1); assert.equal(context[0].role,'assistant';
+  assert.equal(context.length,1); assert.equal(context[0].role,'assistant');
   const lines=context[0].content.split('\n');
   assert.equal(lines.length,2,'injected newlines remain inside quoted JSON strings');
   assert.match(lines[0],/^Untrusted completed-task reference/);
@@ -108,4 +108,181 @@ test('completed task references quote malicious fields without adding roles or e
   assert.doesNotMatch(lines[1],/[<>]/);
   const data=JSON.parse(lines[1]);
   assert.deepEqual(data,{taskId:injection,profile:'alpha',parentConversation:'parent',title:injection,result:injection});
+});
+
+test('full reference wrappers including escaped multibyte fields respect the total UTF-8 budget', async t => {
+  const {service}=fixture(t,{tasks:Array.from({length:12},(_,index)=>({id:`task-${index}`,owner:ownerOf('a'),
+    profile:'alpha',parentConversation:'parent',status:'completed',title:'界'.repeat(200),
+    messages:[{role:'assistant',text:'界<\n'.repeat(1500)}]}))});
+  const context=service.resultContext(target,'Bearer a','alpha','parent');
+  assert.ok(context.length>0 && context.length<=8);
+  assert.ok(context.reduce((bytes,message)=>bytes+Buffer.byteLength(message.content,'utf8'),0)<=12000);
+  for(const message of context) assert.doesNotThrow(()=>JSON.parse(message.content.split('\n')[1]));
+});
+
+test('desktop login gates, bound one-time callback and encrypted preservation of tasks', async t => {
+  const seedTask = { id: 'old', owner: ownerOf('a'), botId: 'bot', profile: 'alpha', status: 'completed', messages: [] };
+  const { request, cipher, dataDir, calls } = fixture(t, { tasks: [seedTask] });
+  const input = { dashboardOrigin: 'https://dashboard.example' };
+  assert.equal((await request('/api/bot/sessions/login', { method: 'POST', body: input, peer: '203.0.113.10' })).status, 400);
+  assert.equal((await request('/api/bot/sessions/login', { method: 'POST', body: input, host: 'evil.example' })).status, 400);
+  const login = await request('/api/bot/sessions/login', { method: 'POST', body: input });
+  assert.equal(login.status, 200);
+  const url = new URL(login.body.authorizeURL);
+  assert.equal(url.searchParams.get('redirect_uri'), 'http://127.0.0.1:18080/__aiot/session-callback');
+  const state = url.searchParams.get('state');
+  assert.equal((await request('/__aiot/session-callback?state=wrong&code=wrong', { key: null })).status, 400);
+  const callback = `/__aiot/session-callback?state=${state}&code=one-time-code`;
+  assert.equal((await request(callback, { key: null, peer: '203.0.113.10' })).status, 403);
+  assert.equal((await request(callback, { key: null })).status, 303);
+  assert.equal((await request(callback, { key: null })).status, 400);
+  const saved = cipher.read(() => null);
+  assert.equal(saved.tasks[0].id, 'old');
+  assert.equal(saved.auth[ownerOf('a')].access_token, 'private-access');
+  assert.equal(readFileSync(join(dataDir, 'task-sessions.json'), 'utf8').includes('private-access'), false);
+  assert.equal(calls.filter(call => call.url.endsWith('/auth/native/token')).length, 1);
+});
+
+test('attachment resolver trusts only owner-authenticated fixed download and response metadata', async () => {
+  const calls = [];
+  const id = 'a'.repeat(32);
+  const attachments = await resolveSessionAttachments({ target, authorization: 'Bearer owner-a',
+    attachments: [{ id, name: '../../evil.sh', mime: 'application/x-executable', size: 999 }],
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response('document content', { headers: { 'content-type': 'text/plain', 'content-disposition': "attachment; filename*=UTF-8''%E7%AD%86%E8%A8%98.txt" } });
+    } });
+  assert.equal(calls[0].url, `${target}/attachments/${id}`);
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer owner-a');
+  assert.equal(calls[0].init.redirect, 'error');
+  assert.equal(attachments[0].name, '筆記.txt');
+  assert.equal(attachments[0].mime, 'text/plain');
+  assert.equal(attachments[0].size, 16);
+  assert.equal(attachments[0].bytes.toString(), 'document content');
+});
+
+test('attachment resolver rejects traversal, excess count, unauthorized IDs, redirects, size/type violations', async () => {
+  const id = 'b'.repeat(32);
+  const base = { target, authorization: 'Bearer a', attachments: [id] };
+  let requests = 0;
+  const never = async () => { requests++; throw new Error('unexpected'); };
+  for (const attachments of [['https://evil.example'], ['../secret'], Array(6).fill(id), [id, id]]) {
+    await assert.rejects(resolveSessionAttachments({ ...base, attachments, fetchImpl: never }));
+  }
+  assert.equal(requests, 0);
+  for (const response of [
+    new Response('', { status: 401 }),
+    new Response('', { status: 302, headers: { location: 'https://evil.example' } }),
+    new Response('x', { headers: { 'content-type': 'image/heic', 'content-disposition': 'attachment; filename="photo.heic"' } }),
+    new Response('x', { headers: { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="../secret.txt"' } }),
+    new Response('x', { headers: { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="x.txt"', 'content-length': String(11*1024*1024) } }),
+    new Response('not-an-image', { headers: { 'content-type': 'image/png', 'content-disposition': 'attachment; filename="x.png"' } }),
+    new Response('x', { headers: { 'content-type': 'text/html', 'content-disposition': 'attachment; filename="x.txt"' } }),
+  ]) await assert.rejects(resolveSessionAttachments({ ...base, fetchImpl: async () => response }));
+});
+
+
+test('batch delete removes only owned managed tasks and reports from encrypted state', async t => {
+  const seedTask = (id, owner, status = 'completed', botId = 'bot') => ({ id, owner, status, botId, profile: 'alpha', sessionId: `runtime-${id}`, storedSessionId: `stored-${id}`, messages: [] });
+  const { request, cipher, service } = fixture(t, {
+    auth: { [ownerOf('a')]: { owner: ownerOf('a'), dashboardOrigin: 'https://dashboard.example', token_type: 'Bearer', access_token: 'secret', refresh_token: 'secret-rt', provider: 'p', expires_at: 9999999999 } },
+    tasks: [seedTask('done', ownerOf('a')), seedTask('live', ownerOf('a'), 'running'), seedTask('foreign', ownerOf('b')), seedTask('otherbot', ownerOf('a'), 'completed', 'other')],
+    reports: [{ owner: ownerOf('a'), taskId: 'done', seq: 1 }, { owner: ownerOf('b'), taskId: 'foreign', seq: 2 }],
+  });
+  const remove = ids => request('/api/bot/sessions/delete', { method: 'POST', body: { ids, botId: 'bot', profile: 'alpha' } });
+  assert.equal((await remove(['done', 'foreign'])).status, 404);
+  assert.equal((await remove(['done', 'otherbot'])).status, 404);
+  assert.equal((await remove(['done', 'live'])).status, 409);
+  assert.equal(cipher.read().tasks.length, 4);
+  const result = await remove(['done']);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { deletedIds: ['done'], failedIds: [] });
+  assert.deepEqual(cipher.read().tasks.map(task => task.id), ['live', 'foreign', 'otherbot']);
+  assert.deepEqual(cipher.read().reports.map(report => report.taskId), ['foreign']);
+  assert.deepEqual(service.events(0, target, 'Bearer a').events, []);
+});
+
+test('wrong-Bot detail and actions fail before any Session reattach or login side effects', async t => {
+  const { request, cipher } = fixture(t, {
+    tasks: [{ id: 'task', owner: ownerOf('a'), botId: 'correct', profile: 'alpha', status: 'completed', messages: [], sessionId: 'runtime', storedSessionId: 'stored' }],
+  });
+  for (const action of ['detail', 'reply', 'interrupt', 'approval', 'clarify']) {
+    const result = await request(`/api/bot/sessions/${action}`, { method: 'POST', body: { id: 'task', botId: 'wrong', profile: 'alpha', text: 'text', decision: 'deny' } });
+    assert.equal(result.status, 404);
+  }
+  assert.equal(cipher.read().tasks[0].error, undefined);
+  assert.equal((await request('/api/bot/sessions/detail?id=task&profile=alpha')).status, 400);
+});
+
+test('resumed pending approval produces one content-free parent-Bot report and resolution suppresses replay', async t => {
+  const taskOwner = ownerOf('a');
+  let pending = true;
+  const { request, service, cipher } = fixture(t, {
+    tasks: [{ id: 'approval-task', owner: taskOwner, botId: 'bot', profile: 'alpha', parentConversation: 'parent-chat', status: 'disconnected', turn: 1, completedTurn: 0, messages: [{ role: 'user', text: 'work', turn: 1 }], sessionId: 'runtime', storedSessionId: 'stored' }],
+    auth: { [taskOwner]: { owner: taskOwner, dashboardOrigin: 'https://dashboard.example', token_type: 'Bearer', access_token: 'secret', refresh_token: 'secret-rt', provider: 'p', expires_at: 9999999999 } },
+  }, async method => {
+    if (method === 'approval.respond') { pending = false; return { resolved: 1 }; }
+    return { session_id: 'runtime', session_key: 'stored', running: true, ...(pending ? { pending_approval: { request_id: 'real-q', command: 'rm /private/file SECRET=xyz', choices: ['deny'] } } : {}) };
+  });
+  await request('/api/bot/sessions/detail?id=approval-task&botId=bot&profile=alpha');
+  const events = service.events(0, target, 'Bearer a').events;
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'approval_request'); assert.equal(events[0].taskId, 'approval-task');
+  assert.equal(events[0].conversation, 'parent-chat'); assert.equal(events[0].payload.request_id, 'real-q');
+  assert.doesNotMatch(JSON.stringify(events), /private|SECRET|xyz|command/);
+  await request('/api/bot/sessions/detail?id=approval-task&botId=bot&profile=alpha');
+  assert.equal(cipher.read().reports.length, 1);
+  await request('/api/bot/sessions/approval', { method: 'POST', body: { id: 'approval-task', botId: 'bot', profile: 'alpha', decision: 'deny' } });
+  assert.deepEqual(service.events(0, target, 'Bearer a').events, []);
+});
+
+test('artifact download uses only an owner-scoped opaque id and the stored official Session path', async t=>{
+  const mine=ownerOf('a');const png=Buffer.from('89504e470d0a1a0a00000000','hex');const fetched=[];
+  const task={id:'task',owner:mine,botId:'bot',profile:'alpha',status:'completed',turn:1,completedTurn:1,storedSessionId:'stored',messages:[],artifacts:[{id:'opaque-artifact',path:'/private/result.png',name:'result.png',mime:'image/png',turn:1}]};
+  const {request}=fixture(t,{tasks:[task],auth:{[mine]:{owner:mine,dashboardOrigin:'https://dashboard.example',token_type:'Bearer',access_token:'secret',refresh_token:'secret-rt',provider:'p',expires_at:9999999999}}},undefined,async(url,init)=>{
+    fetched.push({url,init});
+    if(url.endsWith('/api/status'))return Response.json({auth_required:true});
+    if(url.includes('/api/fs/download?'))return new Response(png,{headers:{'content-type':'application/octet-stream'}});
+    throw new Error('unexpected');
+  });
+  const result=await request('/api/bot/sessions/artifact?botId=bot&profile=alpha&id=task&artifactId=opaque-artifact');
+  assert.equal(result.status,200);assert.equal(result.headers['content-type'],'image/png');assert.deepEqual(result.body,png);
+  const download=new URL(fetched.find(call=>call.url.includes('/api/fs/download?')).url);
+  assert.equal(download.searchParams.get('path'),'/private/result.png');assert.equal(download.searchParams.get('session_id'),'stored');
+  assert.equal(fetched.at(-1).init.headers.Authorization,'Bearer secret');
+  assert.equal((await request('/api/bot/sessions/artifact?botId=other&profile=alpha&id=task&artifactId=opaque-artifact')).status,404);
+  assert.equal((await request('/api/bot/sessions/artifact?botId=bot&profile=alpha&id=task&artifactId=missing')).status,404);
+});
+
+test('artifact scan deadline also bounds token refresh and never blocks completed task detail or queue recovery', async t => {
+  const mine = ownerOf('a');
+  const task = { id: 'completed-task', owner: mine, botId: 'bot', profile: 'alpha', status: 'completed', turn: 1, completedTurn: 1, sessionId: 'runtime', storedSessionId: 'stored', messages: [] };
+  let refreshRequests = 0; let messageRequests = 0;
+  const keepAlive = setTimeout(() => {}, 1_000);
+  t.after(() => clearTimeout(keepAlive));
+  const { request, cipher } = fixture(t, { tasks: [task], auth: { [mine]: { owner: mine, dashboardOrigin: 'https://dashboard.example', token_type: 'Bearer', access_token: 'secret', refresh_token: 'secret-rt', provider: 'p', expires_at: 1 } } },
+    async method => method === 'session.resume' ? { session_id: 'runtime', session_key: 'stored', running: false } : {},
+    async (url, init) => {
+      if (url.endsWith('/api/status')) return Response.json({ auth_required: true });
+      if (url.endsWith('/auth/native/refresh')) {
+        refreshRequests += 1;
+        const signal = init.signal;
+        if (!signal) throw new Error('refresh must be abortable');
+        if (signal.aborted) throw signal.reason;
+        await new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      if (url.includes('/api/sessions/stored/messages?')) { messageRequests += 1; return Response.json({}); }
+      throw new Error('unexpected');
+    },
+    { artifactScanTimeoutMs: 10 });
+  const started = Date.now();
+  const result = await request('/api/bot/sessions/detail?id=completed-task&botId=bot&profile=alpha');
+  assert.ok(Date.now() - started < 500, 'the whole supplementary scan uses one short deadline');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.task.status, 'completed');
+  assert.equal(refreshRequests, 1);
+  assert.equal(messageRequests, 0, 'the expired credential prevented the artifact request');
+  assert.equal(cipher.read().tasks[0].artifactScanTurn, undefined, 'a timed-out scan remains eligible for a later retry');
 });
