@@ -6,6 +6,7 @@ import {
 } from "./approvals.ts";
 import { parseAttachmentList, type AttachmentDescriptor } from "./attachment-rules.ts";
 import type { BotWireEvent } from "./native-bot.ts";
+import { BOT_LIVE_WINDOW } from "./bot-window.ts";
 
 const SUPPRESSED_PREFIXES = [
   "⚡ Interrupting current task",
@@ -216,6 +217,43 @@ export function replayEventSink(sink: EventSink): EventSink {
       // Legacy undated replay has only sequence order. Never date it at reconnect.
       createdAt: input.createdAt ?? (Number.isFinite(input.replayOrder) ? input.replayOrder! : 0) }),
     setWorking: () => {}, activity: () => {}, notice: () => {} };
+}
+
+let replayWindowBuffers: Map<string, Parameters<EventSink["upsert"]>[0][]> | null = null;
+
+export function beginReplayWindow(): void {
+  replayWindowBuffers = new Map();
+}
+
+export function discardReplayWindow(): void {
+  replayWindowBuffers = null;
+}
+
+export function replayWindowSink(sink: EventSink, windowSize = BOT_LIVE_WINDOW): EventSink {
+  if (!replayWindowBuffers) replayWindowBuffers = new Map();
+  const buffers = replayWindowBuffers;
+  return {
+    ...replayEventSink(sink),
+    upsert: (input) => {
+      const dated = {
+        ...input,
+        historical: true as const,
+        createdAt: input.createdAt ?? (Number.isFinite(input.replayOrder) ? input.replayOrder! : 0),
+      };
+      const list = buffers.get(input.profile) ?? [];
+      list.push(dated);
+      if (list.length > windowSize) list.splice(0, list.length - windowSize);
+      buffers.set(input.profile, list);
+    },
+  };
+}
+
+export function flushReplayWindow(sink: EventSink): void {
+  if (!replayWindowBuffers) return;
+  for (const list of replayWindowBuffers.values()) {
+    for (const item of list) sink.upsert(item);
+  }
+  replayWindowBuffers = null;
 }
 
 export function finishEventReplay(
