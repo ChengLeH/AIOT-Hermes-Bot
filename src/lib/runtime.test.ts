@@ -11,7 +11,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
-const catalog = { profiles: [], capabilities: {} };
+const catalog = { profiles: [{ name: "alpha" }], capabilities: {} };
+const emptyCatalog = { profiles: [], capabilities: {} };
 const page = { status: 200, events: [] };
 
 // Execute the real runtime with controlled I/O so delayed responses and React's
@@ -31,8 +32,9 @@ function harness(readSession: () => Promise<unknown> = async () => null) {
   let disconnected = 0;
   const state = {
     connection: { origin: "https://first.example", apiKey: "first", lastProbe: null as unknown },
-    bots: [] as any[], messages: [], sending: {}, botState: {},
+    bots: [] as any[], messages: [], sending: {}, botState: {}, historyResetAt: 0,
     syncHermesProfiles: () => { applied++; },
+    confirmMessageOrigin: () => {},
     setProbe: (probe: unknown) => { state.connection.lastProbe = probe; },
     markDisconnected: () => { disconnected++; },
     restoreDesk: () => {},
@@ -45,7 +47,21 @@ function harness(readSession: () => Promise<unknown> = async () => null) {
       getBotEvents: () => { const job = deferred<typeof page>(); events.push(job); return job.promise; },
     },
     "./bot-catalog": { PROFILE_REFRESH_SECONDS: 30 },
-    "./events": { applyEventBatch: () => {}, replayEventSink: (sink: unknown) => sink, finishEventReplay: () => {} },
+    "./events": {
+      applyEventBatch: () => {},
+      replayEventSink: (sink: unknown) => sink,
+      replayWindowSink: (sink: unknown) => sink,
+      beginReplayWindow: () => {},
+      discardReplayWindow: () => {},
+      flushReplayWindow: () => {},
+      finishEventReplay: () => {},
+    },
+    "./bot-window": { BOT_LIVE_WINDOW: 7, latestHistoryWindow: (rows: unknown[]) => rows.slice(-7) },
+    "./sync-poll": {
+      EVENT_POLL_MS: 2000,
+      HISTORY_SYNC_MS: 60_000,
+      eventPollDelayMs: (visibility: string, fast: boolean) => (fast ? 0 : visibility === "hidden" ? "wait-visible" : 2000),
+    },
     "./store": { useDesk: { getState: () => state } },
     "./session": {
       markRestorePending: () => {}, readBrowserDeskSession: readSession,
@@ -111,8 +127,12 @@ test("old profile success and unauthorized failure cannot overwrite a new connec
 test("stop/start retires the old loop and ignores its pending event failure", async () => {
   const h = harness();
   const firstStop = h.startHermesRuntime();
+  h.profiles[0].resolve(catalog);
+  await flush();
+  h.timeouts.shift()!(); await flush();
   firstStop();
   const stop = h.startHermesRuntime();
+  h.profiles[1].resolve(catalog); await flush();
   h.events[0].reject(new Error("events 401"));
   await flush();
   assert.equal(h.disconnected(), 0);
@@ -126,13 +146,13 @@ test("stop/start retires the old loop and ignores its pending event failure", as
 test("stopped runtime discards pending profile success and event success", async () => {
   const h = harness();
   const stop = h.startHermesRuntime();
+  await flush();
   stop();
   h.profiles[0].resolve(catalog);
-  h.events[0].resolve(page);
   await flush();
   assert.equal(h.applied(), 0);
   assert.equal(h.state.connection.lastProbe, null);
-  assert.equal(h.timeouts.length, 0);
+  assert.equal(h.events.length, 0);
 });
 
 test("each subscriber cleanup is idempotent", async () => {
@@ -166,6 +186,9 @@ test("cursor reset during stored-session read prevents stale profile restoration
 test("current unauthorized event failures still disconnect", async () => {
   const h = harness();
   const stop = h.startHermesRuntime();
+  h.profiles[0].resolve(catalog);
+  await flush();
+  h.timeouts.shift()!(); await flush();
   h.events[0].reject(new Error("events 401"));
   await flush();
   assert.equal(h.disconnected(), 1);
@@ -179,7 +202,7 @@ test("Session history reads one Bot at a time and writes its missing rows as one
     { id: "hp:second", profile: "second", conversation: "two", available: true, nativeCapabilities: { available: true } },
   ];
   const stop = h.startHermesRuntime();
-  h.profiles[0].resolve(catalog); h.events[0].resolve(page);
+  h.profiles[0].resolve(catalog); await flush(); h.timeouts.shift()!(); await flush(); h.events[0].resolve(page);
   await flush();
   assert.equal(h.histories.length, 1);
   h.histories[0].resolve([{ messageId: "one", role: "assistant", text: "first" }, { messageId: "two", role: "assistant", text: "second" }]);
@@ -188,5 +211,24 @@ test("Session history reads one Bot at a time and writes its missing rows as one
   assert.equal(h.historyWrites[0].length, 2);
   assert.equal(h.histories.length, 2, "the next Bot starts only after the first history result is applied");
   h.histories[1].resolve([]);
+  stop();
+});
+
+ test("events wait for a non-empty catalog and survive failed startup discovery", async () => {
+  const h = harness();
+  const stop = h.startHermesRuntime();
+  await flush();
+  assert.equal(h.events.length, 0);
+  h.profiles[0].reject(new Error("profiles 503")); await flush();
+  h.timeouts.shift()!(); await flush();
+  assert.equal(h.events.length, 0);
+  h.window.dispatchEvent(new Event("focus"));
+  h.profiles[1].resolve(emptyCatalog); await flush();
+  h.timeouts.shift()!(); await flush();
+  assert.equal(h.events.length, 0);
+  h.window.dispatchEvent(new Event("focus"));
+  h.profiles[2].resolve(catalog); await flush();
+  h.timeouts.shift()!(); await flush();
+  assert.equal(h.events.length, 1);
   stop();
 });
