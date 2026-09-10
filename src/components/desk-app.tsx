@@ -23,6 +23,7 @@ import {
 import { MISSING_KEY_NOTICE, sanitizeHydratedConnection } from "@/lib/credential-gate";
 import { APP_BRAND, detectLocale, htmlLang, resolveLocale, t } from "@/lib/locale";
 import { sanitizeStoredMessages } from "@/lib/history";
+import { liveBotMessages, settleOrphanPending } from "@/lib/bot-window";
 import { sanitizeStoredApprovals } from "@/lib/approvals";
 import { cn } from "@/lib/utils";
 import { deepLinkFromPwaSearch, stripPwaLocationSecrets } from "@/lib/origin";
@@ -79,6 +80,7 @@ export function DeskApp() {
       if (bootstrap) {
         const catalog = await getBotProfiles(bootstrap.origin, bootstrap.apiKey);
         useDesk.getState().setConnection({ origin: bootstrap.origin, apiKey: bootstrap.apiKey });
+        useDesk.getState().confirmMessageOrigin(bootstrap.origin);
         useDesk.getState().syncHermesProfiles(catalog.profiles, catalog.capabilities);
         useDesk.getState().setProbe({
           ok: true,
@@ -95,7 +97,7 @@ export function DeskApp() {
       useDesk.setState((s) => ({
         view: "roster",
         connection: sanitizeHydratedConnection(s.connection, secret),
-        messages: sanitizeStoredMessages(s.messages),
+        messages: settleOrphanPending(liveBotMessages(sanitizeStoredMessages(s.messages))),
         approvals: sanitizeStoredApprovals(s.approvals),
       }));
       const stored = origin ? await readBrowserDeskSession(origin) : null;
