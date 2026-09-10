@@ -1,7 +1,10 @@
+// Keep in sync with src/lib/bot-window.ts BOT_LIVE_WINDOW.
+export const BOT_LIVE_WINDOW = 7;
+
 // /v1/runs session_id correlates records; it does not restore conversation history.
-// Use backend history, never a browser's possibly incomplete transcript.
+// Use Hermes session messages (existing API). Only the latest live window is sent.
 export async function loadRunContext(fetchImpl, endpoint, conversation) {
-  const response = await fetchImpl(`${endpoint.base}/api/sessions/${encodeURIComponent(conversation)}/messages?order=latest&limit=500`, {
+  const response = await fetchImpl(`${endpoint.base}/api/sessions/${encodeURIComponent(conversation)}/messages?order=latest&limit=${BOT_LIVE_WINDOW}`, {
     headers: endpoint.headers, redirect: "error", signal: AbortSignal.timeout(6000),
   });
   if (!response.ok) throw new Error("context_unavailable");
@@ -15,6 +18,7 @@ export async function loadRunContext(fetchImpl, endpoint, conversation) {
       : Array.isArray(message.content) ? message.content.filter(p => p?.type === "text" && typeof p.text === "string").map(p => p.text).join("\n") : "";
     return content ? [{ role: message.role, content }] : [];
   });
-  if (JSON.stringify(history).length > 256 * 1024) throw new Error("context_too_large");
-  return history;
+  const recent = history.slice(-BOT_LIVE_WINDOW);
+  if (JSON.stringify(recent).length > 256 * 1024) throw new Error("context_too_large");
+  return recent;
 }
