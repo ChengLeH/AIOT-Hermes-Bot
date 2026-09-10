@@ -3,7 +3,7 @@ import { getBotEvents, getBotProfiles } from "./native-bot";
 import { PROFILE_REFRESH_SECONDS } from "./bot-catalog";
 import { applyEventBatch, replayWindowSink, beginReplayWindow, discardReplayWindow, flushReplayWindow, finishEventReplay, type EventSink, type TurnMap } from "./events";
 import { BOT_LIVE_WINDOW, latestHistoryWindow } from "./bot-window";
-import { EVENT_POLL_MS, HISTORY_SYNC_MS, eventPollDelayMs } from "./sync-poll";
+import { HISTORY_SYNC_MS, eventPollDelayMs } from "./sync-poll";
 import { useDesk } from "./store";
 import {
   applyProfilePoll,
@@ -190,7 +190,7 @@ async function refreshProfiles(): Promise<void> {
   }
 }
 
-function waitForNextEventPoll(epoch: number): Promise<void> {
+function waitForNextEventPoll(_epoch: number): Promise<void> {
   const delay = eventPollDelayMs(
     typeof document === "undefined" ? "visible" : document.visibilityState,
     replaying && replayProgress,
