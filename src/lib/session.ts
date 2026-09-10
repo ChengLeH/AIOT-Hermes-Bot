@@ -185,6 +185,10 @@ export function conversationForProfile(
   return undefined;
 }
 
+export function shouldClearMessagesForOrigin(previousOrigin: string, nextOrigin: string): boolean {
+  return Boolean(previousOrigin && nextOrigin && previousOrigin !== nextOrigin);
+}
+
 let writesEnabled = false;
 let restorePending = true;
 
