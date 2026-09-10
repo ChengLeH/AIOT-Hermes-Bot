@@ -108,12 +108,12 @@ export async function getNativeQueue(input: {
   }
 }
 
-export async function getNativeRunEvents(origin: string, apiKey: string, after: number): Promise<{ events: BotWireEvent[]; status: number }> {
+export async function getNativeRunEvents(origin: string, apiKey: string, after: number): Promise<{ events: BotWireEvent[]; status: number; historyResetAt?: number }> {
   try {
     const res = await hermesFetch(`${origin}/api/bot/native/events?after=${encodeURIComponent(String(after))}`, { apiKey, timeoutMs: 6_000 });
     if (!res.ok) return { events: [], status: res.status };
-    const json = (await res.json()) as { events?: BotWireEvent[] };
-    return { events: Array.isArray(json.events) ? json.events.slice(0, 1000) : [], status: res.status };
+    const json = (await res.json()) as { events?: BotWireEvent[]; historyResetAt?: number };
+    return { events: Array.isArray(json.events) ? json.events.slice(0, 1000) : [], status: res.status, historyResetAt: json.historyResetAt };
   } catch {
     return { events: [], status: 0 };
   }
