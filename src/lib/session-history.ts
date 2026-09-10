@@ -8,6 +8,29 @@ export type SessionMessage = {
 export function isImportedSessionMessage(messageId: string | undefined): boolean {
   return typeof messageId === "string" && /^hermes-[^:]*:[^:]*:.+/.test(messageId);
 }
+
+export function isNativeRunAssistantId(messageId: string | undefined): boolean {
+  return typeof messageId === "string" && /^native-(?!user-)/.test(messageId);
+}
+
+function sessionAssistantCoveredByNative(
+  existing: readonly ChatMessage[],
+  rows: readonly SessionMessage[],
+  index: number,
+  matched: (ChatMessage | undefined)[],
+): boolean {
+  if (rows[index]?.role !== "assistant") return false;
+  let userIndex = index - 1;
+  while (userIndex >= 0 && rows[userIndex].role !== "user") userIndex--;
+  const existingUser = userIndex >= 0 ? matched[userIndex] : undefined;
+  if (!existingUser) return false;
+  return existing.some(
+    (message) =>
+      message.role === "assistant" &&
+      isNativeRunAssistantId(message.messageId) &&
+      message.createdAt >= existingUser.createdAt,
+  );
+}
 // Reuse one existing bubble per matching occurrence. A repeated "hello" is not
 // globally deduplicated, and the live event identity remains stable.
 export function missingSessionMessages(
@@ -58,7 +81,10 @@ export function missingSessionMessages(
   }
   return rows.flatMap((row, index) => {
     const match = matched[index];
-    if (!match) return [{ ...row, createdAt: stamps[index]! }];
+    if (!match) {
+      if (sessionAssistantCoveredByNative(existing, rows, index, matched)) return [];
+      return [{ ...row, createdAt: stamps[index]! }];
+    }
     if (match.messageId === row.messageId && isImportedSessionMessage(row.messageId) && match.createdAt !== stamps[index]) {
       // Repair ordering only: an older API copy must not overwrite edited content.
       return [{ ...row, role: match.role, text: match.content, createdAt: stamps[index]! }];
