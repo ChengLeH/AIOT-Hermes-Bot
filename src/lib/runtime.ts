@@ -1,7 +1,9 @@
 import { assistantSnapshot } from "./unread";
 import { getBotEvents, getBotProfiles } from "./native-bot";
 import { PROFILE_REFRESH_SECONDS } from "./bot-catalog";
-import { applyEventBatch, replayEventSink, finishEventReplay, type EventSink, type TurnMap } from "./events";
+import { applyEventBatch, replayWindowSink, beginReplayWindow, discardReplayWindow, flushReplayWindow, finishEventReplay, type EventSink, type TurnMap } from "./events";
+import { BOT_LIVE_WINDOW, latestHistoryWindow } from "./bot-window";
+import { EVENT_POLL_MS, HISTORY_SYNC_MS, eventPollDelayMs } from "./sync-poll";
 import { useDesk } from "./store";
 import {
   applyProfilePoll,
@@ -36,11 +38,13 @@ let generation = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
 let lifecycle = 0;
 let profileRefresh: { generation: number; lifecycle: number; origin: string; apiKey: string } | null = null;
+let profilesReadyGeneration: number | null = null;
 let polling = false;
 const seen = new Set<string>();
 const turns: TurnMap = {};
 let onVisible: (() => void) | null = null;
 let onOffline: (() => void) | null = null;
+let wakeHiddenPoll: (() => void) | null = null;
 
 export function resetEventCursor(): void {
   lastHistorySync = 0;
@@ -49,8 +53,11 @@ export function resetEventCursor(): void {
   replaying = true;
   replayBaseline = null;
   generation += 1;
+  profilesReadyGeneration = null;
   seen.clear();
   for (const key of Object.keys(turns)) delete turns[key];
+  discardReplayWindow();
+  beginReplayWindow();
 }
 
 export function startHermesRuntime(): () => void {
@@ -80,6 +87,7 @@ export function startHermesRuntime(): () => void {
     if (users > 0) return;
     started = false;
     lifecycle += 1;
+    profilesReadyGeneration = null;
     if (timer) clearInterval(timer);
     timer = null;
     if (onVisible) {
@@ -92,6 +100,8 @@ export function startHermesRuntime(): () => void {
       window.removeEventListener("offline", onOffline);
       onOffline = null;
     }
+    wakeHiddenPoll?.();
+    wakeHiddenPoll = null;
   };
 }
 
@@ -129,7 +139,9 @@ async function refreshProfiles(): Promise<void> {
     if (!requestIsCurrent(identity)) return;
     const stored = await readBrowserDeskSession(origin);
     if (!requestIsCurrent(identity)) return;
+    useDesk.getState().confirmMessageOrigin(origin);
     useDesk.getState().syncHermesProfiles(catalog.profiles, catalog.capabilities);
+    profilesReadyGeneration = catalog.profiles.length > 0 ? generation : null;
     useDesk.getState().setProbe({
       ok: true,
       at: Date.now(),
@@ -178,11 +190,36 @@ async function refreshProfiles(): Promise<void> {
   }
 }
 
+function waitForNextEventPoll(epoch: number): Promise<void> {
+  const delay = eventPollDelayMs(
+    typeof document === "undefined" ? "visible" : document.visibilityState,
+    replaying && replayProgress,
+  );
+  if (delay === 0) return Promise.resolve();
+  if (delay === "wait-visible") {
+    return new Promise((resolve) => {
+      const finish = () => {
+        if (wakeHiddenPoll === finish) wakeHiddenPoll = null;
+        if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVis);
+        resolve();
+      };
+      const onVis = () => {
+        if (typeof document === "undefined" || document.visibilityState === "visible") finish();
+      };
+      wakeHiddenPoll = finish;
+      if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
+      else finish();
+    });
+  }
+  return new Promise((r) => setTimeout(r, delay));
+}
+
 async function eventLoop(epoch: number): Promise<void> {
   while (started && epoch === lifecycle) {
-    await pollOnce();
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    if (!hidden) await pollOnce();
     if (!started || epoch !== lifecycle) return;
-    await new Promise((r) => setTimeout(r, replaying && replayProgress ? 0 : 800));
+    await waitForNextEventPoll(epoch);
   }
 }
 
@@ -219,6 +256,10 @@ async function pollOnce(): Promise<void> {
   const origin = connection.origin;
   const apiKey = connection.apiKey;
   if (!origin || !apiKey) return;
+  // Event cursors are destructive acknowledgements. Do not consume a page
+  // until this connection generation has a non-empty profile catalog capable
+  // of routing its messages into the store.
+  if (profilesReadyGeneration !== generation) return;
   if (!browserIsOnline()) {
     markUnreachable("offline");
     return;
@@ -231,7 +272,12 @@ async function pollOnce(): Promise<void> {
       getBotEvents(origin, apiKey, after),
       getNativeRunEvents(origin, apiKey, nativeAfter),
     ]);
-    if (!requestIsCurrent(identity)) return;
+    if (!requestIsCurrent(identity) || profilesReadyGeneration !== gen) return;
+    if (nativePage.status === 200 && nativePage.historyResetAt && useDesk.getState().applyHistoryReset(nativePage.historyResetAt)) {
+      resetEventCursor();
+      void refreshProfiles();
+      return;
+    }
     if (isUnauthorizedStatus(page.status)) {
       useDesk.getState().markDisconnected();
       return;
@@ -255,12 +301,13 @@ async function pollOnce(): Promise<void> {
     const state = { cursor: after, turns, seen };
     replayProgress = page.events.length > 0 || nativePage.events.length > 0;
     const target = sink();
-    applyEventBatch(page.events, state, replaying ? replayEventSink(target) : target);
+    applyEventBatch(page.events, state, replaying ? replayWindowSink(target) : target);
     const nativeState = { cursor: nativeAfter, turns, seen };
-    applyEventBatch(nativePage.events, nativeState, replaying ? replayEventSink(target) : target);
+    applyEventBatch(nativePage.events, nativeState, replaying ? replayWindowSink(target) : target);
     // The API supplies no total/high-water mark. An empty page establishes catch-up,
     // regardless of the server's page size; never expose historical starts in between.
     if (replaying && page.events.length === 0 && nativePage.events.length === 0) {
+      flushReplayWindow(target);
       replaying = false;
       const latest = assistantSnapshot(useDesk.getState().messages);
       for (const [id, previous] of replayBaseline ?? []) {
@@ -271,7 +318,7 @@ async function pollOnce(): Promise<void> {
     }
     // Session reads repair missed/expired event history after reconnect and
     // across devices. Keep historical reads out of unread/working indicators.
-    if (!replaying && historySyncGeneration !== gen && Date.now() - lastHistorySync > 15_000) {
+    if (!replaying && historySyncGeneration !== gen && Date.now() - lastHistorySync > HISTORY_SYNC_MS) {
       lastHistorySync = Date.now();
       historySyncGeneration = gen;
       // Supplementary history never blocks the 800ms live event loop.
@@ -283,12 +330,15 @@ async function pollOnce(): Promise<void> {
           const current = useDesk.getState();
           const currentBot = current.bots.find((item) => item.id === bot.id);
           if (!requestIsCurrent(identity)) return;
+          const existing = current.messages.filter((m) => m.botId === bot.id);
+          if (existing.length === 0 && current.historyResetAt > 0) continue;
+          const windowed = latestHistoryWindow(rows, BOT_LIVE_WINDOW);
           if (!currentBot || !canApplySessionHistory(historyIdentity, {
             generation, origin: current.connection.origin, apiKey: current.connection.apiKey,
             profile: currentBot.profile, conversation: currentBot.conversation, started,
             working: current.botState[bot.id] === "working", sending: Boolean(current.sending[bot.id]),
           })) continue;
-          current.upsertSessionHistoryMessages(bot.profile, bot.conversation, missingSessionMessages(current.messages.filter((m) => m.botId === bot.id), rows).map((row) => ({ profile: bot.profile, conversation: bot.conversation, ...row })));
+          current.upsertSessionHistoryMessages(bot.profile, bot.conversation, missingSessionMessages(existing, windowed).map((row) => ({ profile: bot.profile, conversation: bot.conversation, ...row })));
         } catch { /* Session API is supplementary; preserve Bot event history. */ }
       }} )().finally(() => { if (historySyncGeneration === gen) historySyncGeneration = null; });
     }
