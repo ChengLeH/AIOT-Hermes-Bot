@@ -2,6 +2,33 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { missingSessionMessages } from "./session-history.ts";
 import type { ChatMessage } from "./types";
+test("session catch-up does not import pre-transform simplified when a native assistant already landed", () => {
+  const existing = [
+    { id: "u", messageId: "native-user-run1", botId: "b", role: "user", content: "这个软件很好用", createdAt: 10 },
+    { id: "a", messageId: "native-run1", botId: "b", role: "assistant", content: "這個軟體很好用。", createdAt: 11 },
+  ] as ChatMessage[];
+  assert.deepEqual(
+    missingSessionMessages(existing, [
+      { messageId: "hermes-big:chat:1", role: "user", text: "这个软件很好用" },
+      { messageId: "hermes-big:chat:2", role: "assistant", text: "这个软件很好用。" },
+    ]),
+    [],
+  );
+});
+
+test("session catch-up still imports Hermes-only assistant turns without a native reply", () => {
+  const existing = [
+    { id: "u", messageId: "native-user-other", botId: "b", role: "user", content: "other", createdAt: 1 },
+  ] as ChatMessage[];
+  assert.deepEqual(
+    missingSessionMessages(existing, [
+      { messageId: "hermes-big:chat:9", role: "user", text: "從桌面問" },
+      { messageId: "hermes-big:chat:10", role: "assistant", text: "桌面回覆" },
+    ]).map((row) => row.messageId),
+    ["hermes-big:chat:9", "hermes-big:chat:10"],
+  );
+});
+
 test("session catch-up reuses event bubbles one occurrence at a time", () => {
   const existing = [
     {
