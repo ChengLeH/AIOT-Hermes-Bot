@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { aiotReady, isAiotCommand, ownedAiotReady, supportsNode } from "./aiot-service.mjs";
+import { aiotReady, isAiotCommand, isAiotServerCommand, listenerPids, ownedAiotReady, supportsNode } from "./aiot-service.mjs";
 
 test("enforces the supported AIOT launcher floor", () => {
   assert.equal(supportsNode("20.18.9"), false);
@@ -40,6 +40,19 @@ test("PID ownership requires the exact AIOT server path and port", () => {
   assert.equal(isAiotCommand(`node ${project}/scripts/aiot-server.mjs ${project} 8888`, project, 8888), true);
   assert.equal(isAiotCommand("python -m http.server 8888", project, 8888), false);
   assert.equal(isAiotCommand(`node ${project}/scripts/aiot-server.mjs ${project} 9999`, project, 8888), false);
+});
+
+test("recognizes an AIOT server from an older checkout without accepting another service", () => {
+  assert.equal(isAiotServerCommand("node /old/AIOT/scripts/aiot-server.mjs /old/AIOT 8888"), true);
+  assert.equal(isAiotServerCommand("node C:\\old\\AIOT\\scripts\\aiot-server.mjs C:\\old\\AIOT 8888"), true);
+  assert.equal(isAiotServerCommand("python -m http.server 8888"), false);
+  assert.equal(isAiotServerCommand("node /old/AIOT/scripts/aiot-server.mjs /old/AIOT 9999"), false);
+});
+
+test("reads only listening process IDs for the requested port", async () => {
+  const capture = async () => "42\n42\nnot-a-pid\n";
+  assert.deepEqual(await listenerPids(8888, capture, "darwin"), [42]);
+  assert.deepEqual(await listenerPids(8888, capture, "win32"), [42]);
 });
 
 test("ready rejects an AIOT response owned by another checkout", async () => {

@@ -34,6 +34,13 @@ export function isAiotCommand(command, expectedRoot = root, expectedPort = port)
   return text.includes(resolve(expectedRoot, "scripts/aiot-server.mjs")) && text.includes(String(expectedPort));
 }
 
+export function isAiotServerCommand(command, expectedPort = port) {
+  const text = String(command || "");
+  const server = /(?:^|\s)[^\s]*scripts[\\/]aiot-server\.mjs(?:\s|$)/.test(text);
+  const requestedPort = new RegExp(`(?:^|\\s)${String(expectedPort).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`).test(text);
+  return server && requestedPort;
+}
+
 function capture(command, args) {
   return new Promise((resolveOutput, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
@@ -49,6 +56,43 @@ async function commandForPid(pid) {
     if (process.platform === "win32") return await capture("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`]);
     return await capture("ps", ["-p", String(pid), "-o", "command="]);
   } catch { return ""; }
+}
+
+export async function listenerPids(targetPort = port, captureImpl = capture, platform = process.platform) {
+  try {
+    if (platform === "win32") {
+      const output = await captureImpl("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Get-NetTCPConnection -LocalPort ${targetPort} -State Listen | Select-Object -ExpandProperty OwningProcess`]);
+      return [...new Set(output.split(/\s+/).map(Number).filter((pid) => Number.isInteger(pid) && pid > 1))];
+    }
+    const output = await captureImpl("lsof", ["-nP", "-t", `-iTCP:${targetPort}`, "-sTCP:LISTEN"]);
+    return [...new Set(output.split(/\s+/).map(Number).filter((pid) => Number.isInteger(pid) && pid > 1))];
+  } catch { return []; }
+}
+
+async function terminateAiotProcess(pid, commandLookup = commandForPid) {
+  if (!pid || !alive(pid) || !isAiotServerCommand(await commandLookup(pid))) return false;
+  if (process.platform === "win32") await capture("taskkill.exe", ["/PID", String(pid), "/T"]);
+  else { try { process.kill(-pid, "SIGTERM"); } catch { process.kill(pid, "SIGTERM"); } }
+  return true;
+}
+
+async function reclaimAiotPort() {
+  const listeners = await listenerPids();
+  for (const pid of listeners) await terminateAiotProcess(pid);
+  if (!listeners.length) return;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const remaining = await listenerPids();
+    if (!remaining.length) return;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  const remaining = await listenerPids();
+  const foreign = [];
+  for (const pid of remaining) {
+    if (!isAiotServerCommand(await commandForPid(pid))) foreign.push(pid);
+  }
+  if (foreign.length) throw new Error(`Port ${port} is occupied by a non-AIOT process (${foreign.join(", ")}). AIOT will not stop it.`);
+  throw new Error(`Previous AIOT process still holds port ${port}. See ${logFile}`);
 }
 
 export async function aiotReady(targetUrl = url, fetchImpl = fetch) {
@@ -72,6 +116,7 @@ export async function ownedAiotReady(targetUrl = url, pid = savedPid(), fetchImp
 async function start() {
   if (!supportsNode()) throw new Error(`AIOT requires Node.js 22.12+. Current: ${process.versions.node}`);
   if (await ownedAiotReady()) { console.log(url); return; }
+  await reclaimAiotPort();
   const { ensureDependencies } = await import("./aiot-bootstrap.mjs");
   await ensureDependencies();
   const oldPid = savedPid();

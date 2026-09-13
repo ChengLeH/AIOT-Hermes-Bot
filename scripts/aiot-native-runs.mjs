@@ -97,10 +97,10 @@ export function createNativeRunsService({
   const root = dataDir || join(process.cwd(), ".aiot");
   const privateState = createPrivateStateCipher({ dataDir: root, fileName: "native-runs.json" });
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  let state = { nextSeq: 1, runs: {}, events: [], queues: {} };
+  let state = { historyResetAt: 0, nextSeq: 1, runs: {}, events: [], queues: {} };
   {
     const saved = privateState.read(() => null);
-    if (saved && typeof saved === "object") state = { nextSeq: Number(saved.nextSeq) || 1, runs: saved.runs && typeof saved.runs === "object" ? saved.runs : {}, events: Array.isArray(saved.events) ? saved.events : [], queues: saved.queues && typeof saved.queues === "object" ? saved.queues : {} };
+    if (saved && typeof saved === "object") state = { historyResetAt: Number(saved.historyResetAt) || 0, nextSeq: Number(saved.nextSeq) || 1, runs: saved.runs && typeof saved.runs === "object" ? saved.runs : {}, events: Array.isArray(saved.events) ? saved.events : [], queues: saved.queues && typeof saved.queues === "object" ? saved.queues : {} };
   }
   // Old snapshots did not date chat events. Recover their source run time,
   // never the time the proxy restarts or the browser replays them.
@@ -460,7 +460,7 @@ export function createNativeRunsService({
     if (req.method === "GET" && path === "/api/bot/native/events") {
       const after = Number(incoming.searchParams.get("after") || 0);
       if (!Number.isSafeInteger(after) || after < 0) return json(res, 400, { error: "invalid_cursor" });
-      return json(res, 200, { events: state.events.filter((event) => event.seq > after).slice(0, 100), durable: true });
+      return json(res, 200, { events: state.events.filter((event) => event.seq > after).slice(0, 100), durable: true, historyResetAt: state.historyResetAt });
     }
 
     const control = path.match(/^\/api\/bot\/native\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,255})\/(approval|stop)$/);
@@ -500,7 +500,7 @@ export function createNativeRunsService({
 
   return {
     handle,
-    events: async (after = 0) => ({ events: state.events.filter((event) => event.seq > after).slice(0, 100), durable: true }),
+    events: async (after = 0) => ({ events: state.events.filter((event) => event.seq > after).slice(0, 100), durable: true, historyResetAt: state.historyResetAt }),
     settled: async (runId) => {
       await resumeTask;
       const task = tasks.get(runId);

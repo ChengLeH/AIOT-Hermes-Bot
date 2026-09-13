@@ -111,7 +111,7 @@ function publicTask(task, detail = true, includeContext = false) {
   value.contextCount ??= 0;
   if (task.pending) value.pendingApproval = copy(task.pending);
   if (task.todoState) value.todoState = copy(task.todoState);
-  if (task.queuedTurns?.length) value.queuedTurns = task.queuedTurns.map(item => ({ id:item.id, text:item.text, createdAt:item.createdAt }));
+  if (task.queuedTurns?.length) value.queuedTurns = task.queuedTurns.map(item => ({ id:item.id, text:item.text, createdAt:item.createdAt, ...(item.attachments?.length ? { attachments:item.attachments.map(({id,name,mime,size})=>({id,name,mime,size})) } : {}) }));
   if (detail) value.messages = copy(task.messages || []);
   if (includeContext) value.contextSnapshot = originalContextSnapshot(task);
   return value;
@@ -233,14 +233,56 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
     }
     task.artifactScanTurn = task.turn;
   }
+  async function stageReply(task, text, client, { attachments = [], requestId, fingerprint, queuedItem = null } = {}) {
+    const oldStatus = task.status;
+    const oldError = task.error;
+    const receipt = requestId ? { id: requestId, fingerprint, turn: (task.turn || 0) + 1 } : null;
+    if (receipt) { task.replyRequests ||= []; task.replyRequests.push(receipt); }
+    task.status = 'preparing';
+    try { await save(); }
+    catch (error) {
+      task.status = oldStatus;
+      if (oldError === undefined) delete task.error; else task.error = oldError;
+      if (receipt) {
+        task.replyRequests = task.replyRequests.filter(item => item !== receipt);
+        if (!task.replyRequests.length) delete task.replyRequests;
+      }
+      throw error;
+    }
+    const imagePaths = [];
+    let imageInFlight = false;
+    let refs;
+    try {
+      refs = await stageAttachments(client, task.sessionId, attachments, {
+        onStart: image => { imageInFlight = image; },
+        onImage: path => { if (typeof path !== 'string' || !path) throw failure('task_attachment_rejected', 502); imagePaths.push(path); },
+        onFinish: () => { imageInFlight = false; },
+      });
+    } catch {
+      let cleanupFailed = false;
+      for (const path of imagePaths) {
+        try { const result = await client.request('image.detach', { session_id: task.sessionId, path }); if (result?.detached !== true) cleanupFailed = true; }
+        catch { cleanupFailed = true; }
+      }
+      const error = imageInFlight || cleanupFailed ? 'task_attachment_outcome_unknown' : 'task_attachment_rejected';
+      task.status = imageInFlight || cleanupFailed ? 'unknown' : oldStatus;
+      task.error = error;
+      if (receipt) {
+        if (error === 'task_attachment_rejected') task.replyRequests = task.replyRequests.filter(item => item !== receipt);
+        else receipt.error = error;
+      }
+      await save();
+      throw failure(error, 409);
+    }
+    task.status = oldStatus;
+    return submit(task, text, client, { attachments, refs, requestReceipt: receipt, stagedImagePaths: imagePaths, queuedItem });
+  }
   async function dispatchNext(task) {
     const queued=task.queuedTurns?.[0];
     if(!queued||ACTIVE.has(task.status)||task.upstreamMissing||task.deletion)return;
     const client=await attach(task);
-    const receipt={id:queued.id,fingerprint:queued.fingerprint,turn:(task.turn||0)+1};
-    task.replyRequests ||= [];
-    task.replyRequests.push(receipt);
-    return submit(task,queued.text,client,{requestReceipt:receipt,queuedItem:queued});
+    const attachments=(queued.attachments || []).map(({ dataBase64, ...meta }) => ({ ...meta, bytes: Buffer.from(dataBase64, 'base64') }));
+    return stageReply(task,queued.text,client,{attachments,requestId:queued.id,fingerprint:queued.fingerprint,queuedItem:queued});
   }
   async function settle(task, text, status) {
     if (task.completedTurn === task.turn) return;
@@ -568,56 +610,17 @@ export function createTaskSessions({ getClient, readState = () => ({ tasks: [] }
         const client = await attach(task);
         if (ACTIVE.has(task.status)) {
           if(!requestId)throw failure('task_turn_unsettled',409);
-          if(attachments.length)throw failure('task_queued_attachments_unsupported',409);
+          const queuedBytes=(task.queuedTurns||[]).reduce((total,item)=>total+(item.attachments||[]).reduce((n,file)=>n+Buffer.byteLength(file.dataBase64,'base64'),0),0);
+          if(queuedBytes+attachments.reduce((n,file)=>n+file.bytes.length,0)>25*1024*1024)throw failure('task_queue_full',409);
           task.queuedTurns ||= [];
           if(task.queuedTurns.length>=20)throw failure('task_queue_full',409);
-          task.queuedTurns.push({id:requestId,fingerprint,text,createdAt:now()});
-          task.updatedAt=now();await save();return publicTask(task);
+          const queuedItem={id:requestId,fingerprint,text,createdAt:now(),attachments:attachments.map(({id,name,mime,size,bytes})=>({id,name,mime,size,dataBase64:Buffer.from(bytes).toString('base64')}))};
+          task.queuedTurns.push(queuedItem);
+          task.updatedAt=now();
+          try { await save(); } catch(error) { task.queuedTurns=task.queuedTurns.filter(item=>item!==queuedItem); throw error; }
+          return publicTask(task);
         }
-        const oldStatus = task.status;
-        const oldError = task.error;
-        const receipt = requestId ? { id: requestId, fingerprint, turn: (task.turn || 0) + 1 } : null;
-        if (receipt) { task.replyRequests ||= []; task.replyRequests.push(receipt); }
-        // Persist before queuing any image. A crash during staging remains unsettled
-        // and cannot accidentally consume its queued images in a different reply.
-        task.status = 'preparing';
-        try { await save(); }
-        catch (error) {
-          task.status = oldStatus;
-          if (oldError === undefined) delete task.error; else task.error = oldError;
-          if (receipt) {
-            task.replyRequests = task.replyRequests.filter(item => item !== receipt);
-            if (!task.replyRequests.length) delete task.replyRequests;
-          }
-          throw error;
-        }
-        const imagePaths = [];
-        let imageInFlight = false;
-        let refs;
-        try {
-          refs = await stageAttachments(client, task.sessionId, attachments, {
-            onStart: image => { imageInFlight = image; },
-            onImage: path => { if (typeof path !== 'string' || !path) throw failure('task_attachment_rejected', 502); imagePaths.push(path); },
-            onFinish: () => { imageInFlight = false; },
-          });
-        } catch {
-          let cleanupFailed = false;
-          for (const path of imagePaths) {
-            try { const result = await client.request('image.detach', { session_id: task.sessionId, path }); if (result?.detached !== true) cleanupFailed = true; }
-            catch { cleanupFailed = true; }
-          }
-          const error = imageInFlight || cleanupFailed ? 'task_attachment_outcome_unknown' : 'task_attachment_rejected';
-          task.status = imageInFlight || cleanupFailed ? 'unknown' : oldStatus;
-          task.error = error;
-          if (receipt) {
-            if (error === 'task_attachment_rejected') task.replyRequests = task.replyRequests.filter(item => item !== receipt);
-            else receipt.error = error;
-          }
-          await save();
-          throw failure(error, 409);
-        }
-        task.status = oldStatus;
-        return submit(task, text, client, { attachments, refs, requestReceipt: receipt, stagedImagePaths: imagePaths });
+        return stageReply(task, text, client, { attachments, requestId, fingerprint });
       });
     },
     async respondApproval({ owner, id: taskId, botId, profile, decision }) {

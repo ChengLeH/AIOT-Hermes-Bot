@@ -873,7 +873,9 @@ test('queued Session retry is idempotent and attachments are not staged into an 
   const f=fixture();const task=await f.create();const requestId='33333333-3333-4333-8333-333333333333';
   await f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'queued',requestId});
   await assert.rejects(f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'changed',requestId}),/task_request_conflict/);
-  await assert.rejects(f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'file',requestId:'44444444-4444-4444-8444-444444444444',attachments:[{id:'a',name:'x.txt',mime:'text/plain',size:1,bytes:Buffer.from('x')}]}),/task_queued_attachments_unsupported/);
+  const queued=await f.runtime.reply({owner:'alice',id:task.id,botId:'bot',profile:'worker',text:'file',requestId:'44444444-4444-4444-8444-444444444444',attachments:[{id:'a',name:'x.txt',mime:'text/plain',size:1,bytes:Buffer.from('x')}]});
+  assert.equal(queued.queuedTurns.length,2);
+  assert.equal(JSON.stringify(queued).includes('dataBase64'),false);
   assert.equal(f.calls.some(([method])=>method==='file.attach'),false);
 });
 
@@ -887,4 +889,30 @@ test('accepted stop settles after authoritative idle resume even without a termi
   const restored = await f.runtime.get({ owner: 'alice', id: task.id });
   assert.equal(restored.status, 'interrupted');
   assert.equal(f.completed.length, 0);
+});
+
+test('queued files and images survive restart and stage only into their own next turn', async () => {
+  const f=fixture();const task=await f.create();
+  const attachments=[{id:'doc',name:'x.txt',mime:'text/plain',size:4,bytes:Buffer.from('data')},{id:'img',name:'x.png',mime:'image/png',size:3,bytes:Buffer.from('png')}];
+  await f.runtime.reply({owner:'alice',id:task.id,text:'next files',requestId:'55555555-5555-4555-8555-555555555555',attachments});
+  assert.equal(f.calls.some(([method])=>method==='file.attach'||method==='image.attach_bytes'),false);
+  const saved=JSON.parse(JSON.stringify(f.state()));
+  const f2=fixture({readState:()=>saved});
+  const request=f2.client.request;
+  f2.client.request=async(method,params)=>{
+    if(method==='session.resume'){f2.calls.push([method,params]);return {session_id:'runtime-0',running:true};}
+    await request(method,params);
+    if(method==='file.attach')return {attached:true,ref_text:'@file:attachments/x.txt'};
+    if(method==='image.attach_bytes')return {attached:true,path:'/private/session/x.png'};
+    return {accepted:true};
+  };
+  await f2.runtime.get({owner:'alice',id:task.id});
+  await f2.runtime.onEvent('alice',{type:'message.complete',session_id:'runtime-0',payload:{text:'done',status:'success'}});
+  const methods=f2.calls.map(([method])=>method);
+  assert.ok(methods.indexOf('file.attach')<methods.indexOf('prompt.submit'));
+  assert.ok(methods.indexOf('image.attach_bytes')<methods.indexOf('prompt.submit'));
+  const detail=await f2.runtime.get({owner:'alice',id:task.id});
+  assert.equal(detail.queuedTurns,undefined);
+  assert.deepEqual(detail.messages.at(-1).attachments.map(file=>file.id),['doc','img']);
+  assert.equal(JSON.stringify(detail).includes('dataBase64'),false);
 });

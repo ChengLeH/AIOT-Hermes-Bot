@@ -253,3 +253,17 @@ test("legacy undated events recover persisted source run time rather than restar
     assert.equal(page.events[0].payload.created_at, 1700000000123);
   } finally { service.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("history reset marker survives encrypted service restart", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aiot-reset-marker-"));
+  const { createPrivateStateCipher } = await import("./aiot-private-state.mjs");
+  const cipher = createPrivateStateCipher({ dataDir: root, fileName: "native-runs.json" });
+  cipher.write({ nextSeq: 42, runs: {}, events: [], queues: {}, historyResetAt: 1780000000000 });
+  const service = createNativeRunsService({ dataDir: root, hermesHome: root });
+  try {
+    const page = await service.events(0);
+    assert.equal(page.historyResetAt, 1780000000000);
+    assert.deepEqual(page.events, []);
+    assert.equal(cipher.read(() => null).historyResetAt, 1780000000000);
+  } finally { service.close(); rmSync(root, { recursive: true, force: true }); }
+});

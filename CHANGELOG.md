@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.3
+
+### English
+
+- Queue files and images for an active Session turn, encrypt their bytes with the existing task state, and stage them only when their own queued turn starts. Public task responses expose metadata only, and the total queued attachment payload is capped at 25 MiB.
+- Let users select Bot attachments while work is active; attachments continue through the existing default Fork task route instead of being sent into a busy Bot turn.
+- Preserve the host-side Bot history reset marker across encrypted service restarts so an older device cannot restore messages cleared from another device.
+- Refuse to take port 8888 from an unrelated process. The launcher reclaims it only when the listener is positively identified as an AIOT server, including an older AIOT checkout.
+- Add an optional macOS login service that starts AIOT without placing connection keys in the LaunchAgent file.
+- Replace the partial v0.2.2 README imagery with current fictional-data previews covering Contacts, Bot chat, task queue, Fork context, Session detail, schedules, approvals, and artifacts in English and Traditional Chinese.
+
+Validation and platform claims are recorded in the [v0.2.3 release notes](docs/releases/v0.2.3.md).
+
+### 繁體中文
+
+- Session 執行中仍可把檔案與圖片排入下一輪；附件內容沿用任務狀態加密，等自己的佇列輪次開始才暫存到 Hermes。公開任務回應只包含附件資訊，整批待送附件上限為 25 MiB。
+- Bot 執行中仍可選擇附件；附件沿用既有的預設 Fork 任務路徑，不會硬塞進正在執行的 Bot 輪次。
+- 主機端加密服務重啟後仍保留 Bot 歷史清除時間，避免較舊裝置把已在其他裝置清除的訊息帶回來。
+- 8888 被其他程式占用時拒絕搶占；只有確認監聽者是 AIOT，包括舊版 AIOT 工作目錄，啟動程式才會安全接手。
+- 新增可選用的 macOS 登入服務，LaunchAgent 不保存連線金鑰。
+- README 改用目前版本與虛構資料重新產生的完整預覽，涵蓋聯絡人、Bot 對話、任務佇列、Fork 脈絡、Session 詳情、排程、批准與附件，並提供英文及繁體中文畫面。
+
+驗證範圍與平台聲明記錄於 [v0.2.3 版本說明](docs/releases/v0.2.3.md)。
+
+## 0.2.2
+
+### English
+
 
 
 

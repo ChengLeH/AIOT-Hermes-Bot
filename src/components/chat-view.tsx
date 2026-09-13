@@ -863,7 +863,7 @@ export function ChatView() {
                   }}
                 />
                 <ComposerAttachmentButton
-                  disabled={!live || !bot.available || !bot.conversation || chips.length >= MAX_ATTACHMENTS || blocked || waitingUploads}
+                  disabled={!live || !bot.available || !bot.conversation || chips.length >= MAX_ATTACHMENTS || creatingTask || waitingUploads}
                   onClick={() => fileRef.current?.click()}
                   aria-label={t(locale, "chat.attach")}
                 />
